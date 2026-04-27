@@ -1,3 +1,3 @@
 # File Uploader
 
-API REST file uploader by chunks
+REST API File Management Service for RAG Platform — Chunked Uploads & Streaming
