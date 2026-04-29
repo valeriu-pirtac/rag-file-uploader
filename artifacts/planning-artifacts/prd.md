@@ -15,9 +15,16 @@ stepsCompleted:
         "step-10-nonfunctional",
         "step-11-polish",
         "step-12-complete",
+        "step-e-01-discovery",
+        "step-e-02-review",
+        "step-e-03-edit",
     ]
 workflowStatus: complete
 completedAt: "2026-04-28T20:26:18+03:00"
+lastEdited: "2026-04-29T12:22:19+03:00"
+editHistory:
+    - date: "2026-04-29T12:22:19+03:00"
+      changes: "8 key updates: (1) Renamed FILE_LOADED to FILE_LOAD_COMPLETED throughout, (2) Moved Webhook callbacks to MVP section, (3) Updated concurrency to 10x500MB for single instance, (4) Set silent failure rate target to 1%, (5) Changed upload_id to document_id with action_type field, (6) Removed Guest users rate limit section, (7) Removed FR30-FR31 Guest User Controls, (8) Updated NFR-R2 silent failure threshold"
 releaseMode: single-release
 inputDocuments:
     - "artifacts/planning-artifacts/product-brief-rag-file-uploader.md"
@@ -48,17 +55,17 @@ RAG platforms are only as good as the knowledge they ingest — and that knowled
 
 **RAG File Uploader** is the ingestion boundary of a larger knowledge platform. It exists to make that trust moment reliable. Users — researchers, analysts, knowledge workers — upload dense PDF documents to power their personal knowledge bases. This service ensures every file lands intact, every time, regardless of network conditions or file size. No silent failures. No starting over. No intervention required.
 
-The service implements a tus-protocol-inspired chunked upload API on FastAPI. Files up to 1 GB are split into independently verified segments, each validated with a SHA-256 checksum before commit. Upload sessions are persisted in Redis with 24-hour TTL, enabling seamless resumability across disconnects and restarts. Assembled files are stored immutably on MinIO/S3 as the bronze-layer source of truth. On completion, a `FILE_LOADED` event is published to NATS — the explicit handoff to downstream RAG pipeline services (chunking, embedding, indexing) without coupling those concerns to the upload path.
+The service implements a tus-protocol-inspired chunked upload API on FastAPI. Files up to 1 GB are split into independently verified segments, each validated with a SHA-256 checksum before commit. Upload sessions are persisted in Redis with 24-hour TTL, enabling seamless resumability across disconnects and restarts. Assembled files are stored immutably on MinIO/S3 as the bronze-layer source of truth. On completion, a `FILE_LOAD_COMPLETED` event is published to NATS — the explicit handoff to downstream RAG pipeline services (chunking, embedding, indexing) without coupling those concerns to the upload path.
 
 The API is consumed directly by a Vue.js frontend — 6 versioned endpoints under `/v1` covering the full upload lifecycle (see **Technical API Specification**). Every request is JWT-gated. Each user operates in an isolated tenant workspace — their knowledge base is theirs alone, enforced at storage path, Redis key prefix, deduplication scope, and rate limit boundaries.
 
 ### What Makes This Special
 
-Most upload services stop at storage. This one treats the `FILE_LOADED` event as a first-class output — the handoff to the knowledge pipeline is built in, not bolted on.
+Most upload services stop at storage. This one treats the `FILE_LOAD_COMPLETED` event as a first-class output — the handoff to the knowledge pipeline is built in, not bolted on.
 
 The differentiator is **reliability as a product value, not an engineering concern**. SHA-256 verification per chunk means corruption is caught at the boundary — not discovered later when RAG responses degrade. A bad chunk is rejected immediately with `460 Checksum Mismatch`; the client retries only that segment. Upload sessions survive server restarts. Progress is never lost.
 
-The event-driven architecture (`FILE_LOADED` on NATS, bronze-layer immutable storage) is designed from day 1 for expansion beyond PDFs — toward a universal knowledge ingestion hub that accepts all media types without re-engineering the core pipeline contract.
+The event-driven architecture (`FILE_LOAD_COMPLETED` on NATS, bronze-layer immutable storage) is designed from day 1 for expansion beyond PDFs — toward a universal knowledge ingestion hub that accepts all media types without re-engineering the core pipeline contract.
 
 ## Project Classification
 
@@ -78,7 +85,7 @@ The event-driven architecture (`FILE_LOADED` on NATS, bronze-layer immutable sto
 - **Upload completion rate**: ≥ 90% of uploads complete on first attempt without user-visible interruption
 - **Resumability**: If a session is interrupted (network drop, browser close, client crash), the upload resumes from the exact byte offset within a 24-hour window — no re-upload of already-verified chunks
 - **Silent recovery**: The Vue.js frontend auto-retries failed chunks transparently; users are never asked to restart an upload that can be resumed
-- **Zero ambiguity**: Every upload either completes verifiably (confirmed SHA-256 checksum, `FILE_LOADED` event fired) or returns a clear, actionable error — no silent partial successes
+- **Zero ambiguity**: Every upload either completes verifiably (confirmed SHA-256 checksum, `FILE_LOAD_COMPLETED` event fired) or returns a clear, actionable error — no silent partial successes
 
 ### Business Success
 
@@ -87,7 +94,7 @@ The event-driven architecture (`FILE_LOADED` on NATS, bronze-layer immutable sto
 
 ### Technical Success
 
-- **Concurrency**: 10 concurrent 500 MB uploads and 50 concurrent 100 MB uploads complete without data loss or corruption
+- **Concurrency**: 10 concurrent 500 MB uploads complete without data loss or corruption for a single running service instance
 - **Integrity**: Per-chunk SHA-256 verification catches 100% of corrupted segments before storage commit; corrupt chunks return `460 Checksum Mismatch` and are retried at chunk level only
 - **Performance**: Server-side per-chunk processing overhead (SHA-256 verification + Redis session state write) ≤ 100ms per 5 MB chunk; upload throughput is bounded by client network speed, not service capacity
 - **Security**: JWT validation rejects 100% of unauthenticated requests; ClamAV virus scanning blocks known malicious payloads before bronze layer write
@@ -99,7 +106,7 @@ The event-driven architecture (`FILE_LOADED` on NATS, bronze-layer immutable sto
 | Outcome                            | Target   | Threshold                    |
 | ---------------------------------- | -------- | ---------------------------- |
 | Upload first-attempt success rate  | ≥ 90%    | < 85% triggers investigation |
-| Silent failure rate                | 0%       | ≥ 1% = P0 incident           |
+| Silent failure rate                | 1%       | ≥ 1% = P0 incident           |
 | Chunk integrity catch rate         | 100%     | Any miss = critical defect   |
 | Unauthenticated request rejection  | 100%     | Any miss = security incident |
 | Per-chunk processing overhead      | ≤ 100ms  | > 500ms = performance defect |
@@ -114,7 +121,8 @@ The demo milestone gate. Everything here must work to unblock downstream platfor
 - PDF file uploads up to 1 GB per file
 - Chunked, resumable upload with per-chunk SHA-256 integrity verification
 - MinIO/S3 bronze-layer immutable storage (raw files, unmodified)
-- `FILE_LOADED` event publication via NATS (file ID, tenant ID, S3 path, checksum, size, timestamp)
+- `FILE_LOAD_COMPLETED` event publication via NATS (file ID, tenant ID, S3 path, checksum, size, timestamp)
+- Webhook callbacks as an alternative to NATS event (for platform integrators who can't consume NATS directly)
 - Upload session state in Redis with 24-hour TTL and atomic chunk tracking
 - File deduplication within tenant workspace (SHA-256 fingerprint match)
 - ClamAV virus scanning before bronze layer write
@@ -132,7 +140,6 @@ Features that make the service competitive and operationally robust:
 - Configurable chunk size per upload session (client hint, server-bounded)
 - Per-tenant upload rate limiting and quota enforcement
 - Admin API for upload session inspection and manual abort
-- Webhook callbacks as an alternative to NATS event (for platform integrators who can't consume NATS directly)
 - Enhanced error telemetry — per-tenant failure rates exposed via Prometheus
 
 ### Vision (Future)
@@ -141,7 +148,7 @@ The universal knowledge ingestion hub:
 
 - All media types — audio, video, images, structured data (CSV, JSON)
 - Format-aware pre-processing hooks per media type (e.g., audio transcription trigger, image OCR trigger) — delivered as pluggable pipeline steps, not hardcoded logic
-- Rich `FILE_LOADED` event envelope carrying format metadata, extracted structure hints, and tenant lineage — enabling intelligent multi-modal RAG pipelines
+- Rich `FILE_LOAD_COMPLETED` event envelope carrying format metadata, extracted structure hints, and tenant lineage — enabling intelligent multi-modal RAG pipelines
 - Global deduplication across a shared knowledge graph (cross-tenant, opt-in)
 - Presigned upload URLs for direct-to-storage flows where the API service is not in the hot path
 
@@ -153,9 +160,9 @@ Dr. Elena is a legal researcher building a personal knowledge base to power her 
 
 She opens the platform, creates her workspace. At that moment, she becomes the owner and administrator — the workspace is hers alone, isolated from every other user's data. She selects her first file: a 700 MB PDF corpus. The Vue.js frontend splits it into chunks and begins uploading. A progress bar advances steadily. She doesn't know — or need to know — that behind this bar, each chunk is being SHA-256 verified, committed to Redis, and streamed to MinIO. She starts preparing her next file.
 
-Upload completes. The service assembles the multipart file on MinIO, writes it to the bronze layer, and fires a `FILE_LOADED` event to NATS. The downstream RAG pipeline picks it up — chunking, embedding, indexing. Minutes later, Elena asks her knowledge base a question about a ruling from 1994. The answer is accurate. The citation is correct. She uploads the remaining 39 files without a second thought.
+Upload completes. The service assembles the multipart file on MinIO, writes it to the bronze layer, and fires a `FILE_LOAD_COMPLETED` event to NATS. The downstream RAG pipeline picks it up — chunking, embedding, indexing. Minutes later, Elena asks her knowledge base a question about a ruling from 1994. The answer is accurate. The citation is correct. She uploads the remaining 39 files without a second thought.
 
-**This journey reveals requirements for:** workspace creation with owner role assignment, JWT-scoped upload authorization (owner-only), chunked upload pipeline, MinIO bronze-layer write, `FILE_LOADED` event publication, Prometheus progress observability.
+**This journey reveals requirements for:** workspace creation with owner role assignment, JWT-scoped upload authorization (owner-only), chunked upload pipeline, MinIO bronze-layer write, `FILE_LOAD_COMPLETED` event publication, Prometheus progress observability.
 
 ---
 
@@ -204,7 +211,7 @@ The operator opens a support ticket, contacts the user, and shares the correct c
 | Workspace creation + owner role assignment                     | Journey 1     |
 | JWT-scoped upload authorization (owner-only write)             | Journeys 1, 3 |
 | Chunked upload pipeline with SHA-256 per-chunk verification    | Journeys 1, 2 |
-| MinIO bronze-layer write + `FILE_LOADED` NATS event            | Journey 1     |
+| MinIO bronze-layer write + `FILE_LOAD_COMPLETED` NATS event    | Journey 1     |
 | `HEAD` offset query + Vue.js silent auto-retry                 | Journey 2     |
 | Redis session persistence (24h TTL) + resume-from-offset       | Journey 2     |
 | Session expiry handling at TTL boundary                        | Journey 2     |
@@ -268,11 +275,12 @@ RAG File Uploader is a REST API microservice — no UI, no SDK — consumed dire
 
 ```json
 {
-    "upload_id": "uuid",
+    "document_id": "uuid",
     "workspace_id": "uuid",
     "offset": 0,
     "expires_at": "ISO-8601 timestamp",
-    "status": "pending"
+    "status": "pending",
+    "action_type": "UPLOAD"
 }
 ```
 
@@ -289,7 +297,7 @@ RAG File Uploader is a REST API microservice — no UI, no SDK — consumed dire
 
 ```json
 {
-    "upload_id": "uuid",
+    "document_id": "uuid",
     "workspace_id": "uuid",
     "filename": "string",
     "size": "integer",
@@ -299,7 +307,8 @@ RAG File Uploader is a REST API microservice — no UI, no SDK — consumed dire
     "sha256_checksum": "string",
     "created_at": "ISO-8601",
     "expires_at": "ISO-8601",
-    "completed_at": "ISO-8601 | null"
+    "completed_at": "ISO-8601 | null",
+    "action_type": "UPLOAD"
 }
 ```
 
@@ -347,14 +356,6 @@ All error responses follow the standard schema:
 - Total concurrent capacity: `10 × num_running_instances` (configurable via `MAX_CONCURRENT_UPLOADS` env var)
 - Enforced via Redis atomic counter per workspace; sessions exceeding capacity receive `429 Too Many Requests`
 
-**Guest users — Configurable rate limit:**
-
-- Default: 1 file per day
-- Configurable via env vars: `GUEST_RATE_LIMIT_COUNT=1`, `GUEST_RATE_LIMIT_WINDOW=day|week|month`
-- Tracked per `user_id` in Redis with TTL matching the configured window
-
-**Post-v1:** Subscription tier-based limits enforced per tenant — to be designed when subscription model is defined.
-
 ### API Documentation
 
 - OpenAPI 3.0 spec auto-generated by FastAPI at `/docs` (Swagger UI) and `/openapi.json`
@@ -379,17 +380,17 @@ All capabilities as defined in **Product Scope — MVP**. The four user journeys
 
 **Technical Risks:**
 
-| Risk                                                    | Likelihood | Impact | Mitigation                                                                                                                 |
-| ------------------------------------------------------- | ---------- | ------ | -------------------------------------------------------------------------------------------------------------------------- |
-| ClamAV scanning latency on large files (1 GB scan time) | Medium     | Medium | Run ClamAV async — scan after bronze layer write, block `FILE_LOADED` event until scan clears; configurable scan timeout   |
-| NATS unavailable when upload completes                  | Medium     | High   | Dead letter queue in Redis for failed event publications; retry with exponential backoff before marking upload `failed`    |
-| Redis restart loses in-flight upload sessions           | Low        | High   | Enable Redis AOF persistence or replication; 24h TTL means sessions are recoverable on restart                             |
-| MinIO multipart partial commits                         | Low        | Medium | Lifecycle policy on MinIO to abort incomplete multipart uploads after 48h; service-side abort on `DELETE /v1/uploads/{id}` |
+| Risk                                                    | Likelihood | Impact | Mitigation                                                                                                                       |
+| ------------------------------------------------------- | ---------- | ------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| ClamAV scanning latency on large files (1 GB scan time) | Medium     | Medium | Run ClamAV async — scan after bronze layer write, block `FILE_LOAD_COMPLETED` event until scan clears; configurable scan timeout |
+| NATS unavailable when upload completes                  | Medium     | High   | Dead letter queue in Redis for failed event publications; retry with exponential backoff before marking upload `failed`          |
+| Redis restart loses in-flight upload sessions           | Low        | High   | Enable Redis AOF persistence or replication; 24h TTL means sessions are recoverable on restart                                   |
+| MinIO multipart partial commits                         | Low        | Medium | Lifecycle policy on MinIO to abort incomplete multipart uploads after 48h; service-side abort on `DELETE /v1/uploads/{id}`       |
 
 **Market Risks:**
 
 - **Risk**: Demo showcases upload reliability but downstream RAG pipeline isn't ready — perceived value is low
-- **Mitigation**: `FILE_LOADED` event contract is the interface boundary; the upload service is independently demonstrable with a stub consumer that logs received events
+- **Mitigation**: `FILE_LOAD_COMPLETED` event contract is the interface boundary; the upload service is independently demonstrable with a stub consumer that logs received events
 
 **Resource Risks:**
 
@@ -427,9 +428,9 @@ All capabilities as defined in **Product Scope — MVP**. The four user journeys
 
 ### Pipeline Integration
 
-- **FR19**: The system publishes a `FILE_LOADED` event upon successful file assembly and storage, carrying: file ID, tenant/workspace ID, S3 path, SHA-256 checksum, file size, and timestamp
-- **FR20**: The system retries `FILE_LOADED` event publication on NATS unavailability before marking the upload as failed
-- **FR21**: Downstream services can subscribe to `FILE_LOADED` events without any coupling to the upload service
+- **FR19**: The system publishes a `FILE_LOAD_COMPLETED` event upon successful file assembly and storage, carrying: file ID, tenant/workspace ID, S3 path, SHA-256 checksum, file size, and timestamp
+- **FR20**: The system retries `FILE_LOAD_COMPLETED` event publication on NATS unavailability before marking the upload as failed
+- **FR21**: Downstream services can subscribe to `FILE_LOAD_COMPLETED` events without any coupling to the upload service
 
 ### Workspace & Tenant Isolation
 
@@ -445,22 +446,17 @@ All capabilities as defined in **Product Scope — MVP**. The four user journeys
 - **FR28**: The system enforces workspace-role-based access control — collaborator tokens are rejected on write endpoints with `403 Forbidden`
 - **FR29**: The system supports workspace-scoped JWT tokens issued by the platform auth service, carrying workspace ID, role, and optionally shared file IDs
 
-### Guest User Controls
-
-- **FR30**: Guest users are subject to a configurable upload rate limit (count and time window) enforced independently per user
-- **FR31**: Platform operators can configure the guest rate limit window (day / week / month) and maximum file count via environment variables
-
 ### Observability & Operations
 
-- **FR32**: The system exposes Prometheus metrics: `upload_chunks_total`, `upload_bytes_total`, `chunk_verification_failures_total`, all labelled by workspace
-- **FR33**: The system emits structured logs for every upload lifecycle event, including tenant ID, session ID, chunk index, and failure reason where applicable
-- **FR34**: Platform operators can determine service health and active upload load without log scraping
-- **FR35**: The system exposes an OpenAPI 3.0 specification at `/openapi.json` consumable by the Vue.js frontend without a custom SDK
+- **FR30**: The system exposes Prometheus metrics: `upload_chunks_total`, `upload_bytes_total`, `chunk_verification_failures_total`, all labelled by workspace
+- **FR31**: The system emits structured logs for every upload lifecycle event, including tenant ID, session ID, chunk index, and failure reason where applicable
+- **FR32**: Platform operators can determine service health and active upload load without log scraping
+- **FR33**: The system exposes an OpenAPI 3.0 specification at `/openapi.json` consumable by the Vue.js frontend without a custom SDK
 
 ### Capacity & Availability
 
-- **FR36**: The system enforces a configurable maximum of concurrent upload sessions per service instance, returning `429 Too Many Requests` when exceeded
-- **FR37**: The system is deployable as a Docker container alongside its dependencies (Redis, MinIO, NATS, ClamAV) via a provided Docker Compose configuration
+- **FR34**: The system enforces a configurable maximum of concurrent upload sessions per service instance, returning `429 Too Many Requests` when exceeded
+- **FR35**: The system is deployable as a Docker container alongside its dependencies (Redis, MinIO, NATS, ClamAV) via a provided Docker Compose configuration
 
 ## Non-Functional Requirements
 
@@ -479,7 +475,7 @@ All capabilities as defined in **Product Scope — MVP**. The four user journeys
 - **NFR-S3**: Upload session IDs are **cryptographically random UUIDs** (v4) — not sequential, not guessable
 - **NFR-S4**: JWT validation is enforced on **100% of requests** — no endpoint is accessible without a valid token
 - **NFR-S5**: No cross-tenant data is accessible at any layer — storage path namespace, Redis key prefix, and deduplication scope are all isolated per workspace
-- **NFR-S6**: No malicious payload is persisted to the bronze layer — ClamAV scanning must complete before `FILE_LOADED` event is published
+- **NFR-S6**: No malicious payload is persisted to the bronze layer — ClamAV scanning must complete before `FILE_LOAD_COMPLETED` event is published
 
 ### Scalability
 
@@ -491,14 +487,14 @@ All capabilities as defined in **Product Scope — MVP**. The four user journeys
 ### Reliability
 
 - **NFR-R1**: Upload first-attempt success rate ≥ **90%** under normal operating conditions
-- **NFR-R2**: Silent failure rate must be **0%** — any silent failure rate ≥ 1% constitutes a P0 incident
+- **NFR-R2**: Silent failure rate must be **1%** — any silent failure rate ≥ 1% constitutes a P0 incident
 - **NFR-R3**: Upload session state survives **service restarts** — Redis AOF persistence or replication is required; in-flight sessions resume from last verified offset on reconnect
-- **NFR-R4**: `FILE_LOADED` event publication achieves **at-least-once delivery** — failures trigger retry with exponential backoff before the upload is marked `failed`
+- **NFR-R4**: `FILE_LOAD_COMPLETED` event publication achieves **at-least-once delivery** — failures trigger retry with exponential backoff before the upload is marked `failed`
 - **NFR-R5**: ClamAV service unavailability must not silently bypass scanning — the service either waits (with configurable timeout) or returns a clear error; it never skips scanning and proceeds
 
 ### Integration
 
-- **NFR-I1**: **NATS JetStream**: `FILE_LOADED` events published to a durable subject; consumers can replay events on reconnect; subject name and schema are stable API contracts
+- **NFR-I1**: **NATS JetStream**: `FILE_LOAD_COMPLETED` events published to a durable subject; consumers can replay events on reconnect; subject name and schema are stable API contracts
 - **NFR-I2**: **MinIO/S3**: All storage operations use the S3-compatible API — no MinIO-specific SDK calls that would prevent migration to AWS S3 or compatible alternatives
 - **NFR-I3**: **Redis**: All session state operations use atomic commands (`HSET`, `HINCRBY`, `EXPIRE`) — no Lua scripts or cluster-incompatible patterns
 - **NFR-I4**: **ClamAV**: Integration via `clamd` TCP socket — clamd address and port configurable via environment variables
