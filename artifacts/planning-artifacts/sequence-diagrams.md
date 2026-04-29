@@ -81,8 +81,8 @@ graph TB
     %% Client Interactions
     Client -->|1. POST /token| Auth
     Auth -->|JWT Token| Client
-    Client -->|2. POST /v1/uploads<br/>(Bearer Token)| API
-    Client -->|3. PATCH /v1/uploads/{id}<br/>(Chunk + Headers)| API
+    Client -->|2. POST /v1/uploads| API
+    Client -->|3. PATCH /v1/uploads/{id}| API
     Client -->|4. HEAD /v1/uploads/{id}| API
 
     %% Internal Architecture Flow (Clean Architecture)
@@ -92,10 +92,10 @@ graph TB
     INFRA -->|Implementation| DOMAIN
 
     %% Infrastructure to External Services
-    INFRA -->|Session State<br/>(HSET/HGET)| Redis
-    INFRA -->|Multipart Upload<br/>(Upload Part)| S3
+    INFRA -->|Session State| Redis
+    INFRA -->|Multipart Upload| S3
     INFRA -->|Stream Scan| ClamAV
-    INFRA -->|Publish Event<br/>(FILE_LOAD_COMPLETED)| NATS
+    INFRA -->|Publish Event| NATS
 
     %% Event Consumption
     NATS -->|Subscribe| RAG
