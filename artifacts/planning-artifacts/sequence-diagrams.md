@@ -81,9 +81,9 @@ graph TB
     %% Client Interactions
     Client -->|1. POST /token| Auth
     Auth -->|JWT Token| Client
-    Client -->|2. POST /v1/uploads<br/>Authorization: Bearer| API
-    Client -->|3. PATCH /v1/uploads/{id}<br/>+ Chunk Bytes| API
-    Client -->|4. HEAD /v1/uploads/{id}<br/>Query Offset| API
+    Client -->|2. POST /v1/uploads<br/>(Bearer Token)| API
+    Client -->|3. PATCH /v1/uploads/{id}<br/>(Chunk + Headers)| API
+    Client -->|4. HEAD /v1/uploads/{id}| API
 
     %% Internal Architecture Flow (Clean Architecture)
     API -->|Request| APP
@@ -92,10 +92,10 @@ graph TB
     INFRA -->|Implementation| DOMAIN
 
     %% Infrastructure to External Services
-    INFRA -->|Session State<br/>HSET/HGET| Redis
-    INFRA -->|Multipart Upload<br/>Upload Part| S3
+    INFRA -->|Session State<br/>(HSET/HGET)| Redis
+    INFRA -->|Multipart Upload<br/>(Upload Part)| S3
     INFRA -->|Stream Scan| ClamAV
-    INFRA -->|Publish Event<br/>FILE_LOAD_COMPLETED| NATS
+    INFRA -->|Publish Event<br/>(FILE_LOAD_COMPLETED)| NATS
 
     %% Event Consumption
     NATS -->|Subscribe| RAG
@@ -152,8 +152,8 @@ sequenceDiagram
 
     %% Step 1: Initiate Upload Session
     Note over User,Redis: ⏱️ Session Initiation (<200ms p99)
-    User->>API: POST /v1/uploads<br/>{fileName, fileSize, checksum, workspaceId}
-    Note right of API: t=0ms
+    User->>API: POST /v1/uploads
+    Note right of API: {fileName, fileSize, checksum, workspaceId} | t=0ms
     API->>Auth: Validate JWT token
     Note right of Auth: t=5ms (RS256 verify)
     Auth->>Auth: Verify RS256 signature<br/>Extract workspace_id, role
@@ -165,8 +165,8 @@ sequenceDiagram
     UC->>S3: Initiate multipart upload
     Note right of S3: t=50ms (S3 API latency)
     S3-->>UC: upload_id returned
-    UC->>Redis: Create session hash<br/>Key: session:workspace_{id}:upload_{id}
-    Note right of Redis: t=52ms (Redis: <2ms)
+    UC->>Redis: Create session hash
+    Note right of Redis: Key: session:workspace_{id}:upload_{id} | t=52ms (Redis: <2ms)
     Redis-->>UC: Session created (24h TTL)
     UC-->>API: {sessionId, uploadUrl, offset: 0}
     Note right of API: t=55ms (total)
@@ -174,8 +174,8 @@ sequenceDiagram
 
     %% Step 2: Upload First Chunk
     Note over User,Redis: ⏱️ Chunk Upload (≤100ms per 5MB chunk)
-    User->>API: PATCH /v1/uploads/{sessionId}<br/>Content-Type: application/offset+octet-stream<br/>Upload-Offset: 0<br/>Upload-Checksum: sha256 {hash}
-    Note right of API: t=0ms (chunk cycle)
+    User->>API: PATCH /v1/uploads/{sessionId}
+    Note right of API: Content-Type: application/offset+octet-stream<br/>Upload-Offset: 0<br/>Upload-Checksum: sha256 {hash} | t=0ms
     API->>Auth: Validate JWT (workspace owner?)
     Note right of Auth: t=5ms (cached key)
     Auth-->>API: Authorized
@@ -203,18 +203,20 @@ sequenceDiagram
         Note right of S3: t=75ms (S3 write: ~40ms for 5MB)
         S3-->>UC: part_etag returned
 
-        UC->>Redis: Update session<br/>HSET chunks: [{index:1, etag}]<br/>HINCRBY offset: chunk_size
-        Note right of Redis: t=77ms (Redis atomic: <2ms)
+        UC->>Redis: Update session
+        Note right of Redis: HSET chunks: [{index:1, etag}]<br/>HINCRBY offset: chunk_size | t=77ms (Redis atomic: <2ms)
         Redis-->>UC: Updated
 
         UC-->>API: {offset: new_offset}
         Note right of API: t=80ms (total: within 100ms budget ✓)
-        API-->>User: 204 No Content<br/>Upload-Offset: {new_offset}
+        API-->>User: 204 No Content
+        Note right of User: Upload-Offset: {new_offset}
     end
 
     %% Step 3: Upload More Chunks (loop)
     loop For each remaining chunk
-        User->>API: PATCH /v1/uploads/{sessionId}<br/>Upload-Offset: {current_offset}<br/>Upload-Checksum: sha256 {hash}
+        User->>API: PATCH /v1/uploads/{sessionId}
+        Note right of API: Upload-Offset: {current_offset}<br/>Upload-Checksum: sha256 {hash}
         API->>Auth: Validate JWT
         Auth-->>API: Authorized
         API->>UC: ProcessChunkUseCase.execute()
@@ -239,15 +241,18 @@ sequenceDiagram
     Redis-->>UC: current_offset
     UC-->>API: offset value
     Note right of API: t=12ms (total: well under 50ms ✓)
-    API-->>User: 200 OK<br/>Upload-Offset: {current_offset}<br/>Upload-Length: {file_size}
+    API-->>User: 200 OK
+    Note right of User: Upload-Offset: {current_offset}<br/>Upload-Length: {file_size}
 
     %% Step 5: Complete Upload
-    User->>API: PATCH /v1/uploads/{sessionId}<br/>Upload-Offset: {final_offset}<br/>(final chunk)
+    User->>API: PATCH /v1/uploads/{sessionId}
+    Note right of API: Upload-Offset: {final_offset}<br/>(final chunk)
     API->>Auth: Validate JWT
     Auth-->>API: Authorized
     API->>UC: ProcessChunkUseCase.execute()
     UC->>UC: Detect offset == file_size (complete)
-    UC->>S3: Complete multipart upload<br/>(all part etags)
+    UC->>S3: Complete multipart upload
+    Note right of S3: (all part etags)
     S3-->>UC: Final S3 object created
 
     UC->>S3: Download assembled file
@@ -269,11 +274,13 @@ sequenceDiagram
             UC-->>User: 400 Malware Detected
         else File clean
             UC->>Redis: Mark session 'completed'
-            UC->>NATS: Publish FILE_LOAD_COMPLETED event<br/>{fileId, workspaceId, s3Path, checksum, size, timestamp}
+            UC->>NATS: Publish FILE_LOAD_COMPLETED event
+            Note right of NATS: {fileId, workspaceId, s3Path, checksum, size, timestamp}
             NATS-->>UC: Event published
 
             UC-->>API: Upload complete
-            API-->>User: 200 OK<br/>{status: 'completed', fileId}
+            API-->>User: 200 OK
+            Note right of User: {status: 'completed', fileId}
         end
     end
 
