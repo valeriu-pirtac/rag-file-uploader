@@ -82,8 +82,8 @@ graph TB
     Client -->|1. POST /token| Auth
     Auth -->|JWT Token| Client
     Client -->|2. POST /v1/uploads| API
-    Client -->|3. PATCH /v1/uploads/{id}| API
-    Client -->|4. HEAD /v1/uploads/{id}| API
+    Client -->|3. PATCH /v1/uploads/[id]| API
+    Client -->|4. HEAD /v1/uploads/[id]| API
 
     %% Internal Architecture Flow (Clean Architecture)
     API -->|Request| APP
@@ -166,7 +166,7 @@ sequenceDiagram
     Note right of S3: t=50ms (S3 API latency)
     S3-->>UC: upload_id returned
     UC->>Redis: Create session hash
-    Note right of Redis: Key: session:workspace_{id}:upload_{id} | t=52ms (Redis: <2ms)
+    Note right of Redis: Key: session:workspace_[id]:upload_[id] | t=52ms (Redis: <2ms)
     Redis-->>UC: Session created (24h TTL)
     UC-->>API: {sessionId, uploadUrl, offset: 0}
     Note right of API: t=55ms (total)
@@ -174,8 +174,8 @@ sequenceDiagram
 
     %% Step 2: Upload First Chunk
     Note over User,Redis: ⏱️ Chunk Upload (≤100ms per 5MB chunk)
-    User->>API: PATCH /v1/uploads/{sessionId}
-    Note right of API: Content-Type: application/offset+octet-stream<br/>Upload-Offset: 0<br/>Upload-Checksum: sha256 {hash} | t=0ms
+    User->>API: PATCH /v1/uploads/[sessionId]
+    Note right of API: Content-Type: application/offset+octet-stream<br/>Upload-Offset: 0<br/>Upload-Checksum: sha256 [hash] | t=0ms
     API->>Auth: Validate JWT (workspace owner?)
     Note right of Auth: t=5ms (cached key)
     Auth-->>API: Authorized
@@ -210,13 +210,13 @@ sequenceDiagram
         UC-->>API: {offset: new_offset}
         Note right of API: t=80ms (total: within 100ms budget ✓)
         API-->>User: 204 No Content
-        Note right of User: Upload-Offset: {new_offset}
+        Note right of User: Upload-Offset: [new_offset]
     end
 
     %% Step 3: Upload More Chunks (loop)
     loop For each remaining chunk
-        User->>API: PATCH /v1/uploads/{sessionId}
-        Note right of API: Upload-Offset: {current_offset}<br/>Upload-Checksum: sha256 {hash}
+        User->>API: PATCH /v1/uploads/[sessionId]
+        Note right of API: Upload-Offset: [current_offset]<br/>Upload-Checksum: sha256 [hash]
         API->>Auth: Validate JWT
         Auth-->>API: Authorized
         API->>UC: ProcessChunkUseCase.execute()
@@ -229,7 +229,7 @@ sequenceDiagram
 
     %% Step 4: Query Upload Progress (optional)
     Note over User,Redis: ⏱️ Offset Query (<50ms p99)
-    User->>API: HEAD /v1/uploads/{sessionId}
+    User->>API: HEAD /v1/uploads/[sessionId]
     Note right of API: t=0ms
     API->>Auth: Validate JWT (collaborator can read)
     Note right of Auth: t=5ms
@@ -242,11 +242,11 @@ sequenceDiagram
     UC-->>API: offset value
     Note right of API: t=12ms (total: well under 50ms ✓)
     API-->>User: 200 OK
-    Note right of User: Upload-Offset: {current_offset}<br/>Upload-Length: {file_size}
+    Note right of User: Upload-Offset: [current_offset]<br/>Upload-Length: [file_size]
 
     %% Step 5: Complete Upload
-    User->>API: PATCH /v1/uploads/{sessionId}
-    Note right of API: Upload-Offset: {final_offset}<br/>(final chunk)
+    User->>API: PATCH /v1/uploads/[sessionId]
+    Note right of API: Upload-Offset: [final_offset]<br/>(final chunk)
     API->>Auth: Validate JWT
     Auth-->>API: Authorized
     API->>UC: ProcessChunkUseCase.execute()
@@ -756,7 +756,7 @@ sequenceDiagram
             else Role is owner
                 API->>UC: InitiateUploadUseCase.execute()
             end
-        else HEAD /v1/uploads/{id} (Read - owner or collaborator)
+        else HEAD /v1/uploads/[id] (Read - owner or collaborator)
             API->>API: Check request.state.role in ['owner', 'collaborator']
             API->>API: Check if file in shared_file_ids (collaborator)
             alt Not authorized
@@ -801,13 +801,13 @@ sequenceDiagram
         UC->>S3: Initiate multipart upload
         UC-->>Client: {sessionId, uploadUrl, offset: 0}
 
-        Client->>API: PATCH /v1/uploads/{sessionId}<br/>Upload-Offset: 0 (chunk 1)
+        Client->>API: PATCH /v1/uploads/[sessionId]<br/>Upload-Offset: 0 (chunk 1)
         API->>UC: ProcessChunkUseCase
         UC->>S3: Upload part 1
         UC->>Redis: Update (offset=5242880, chunks=[{1, etag1}])
         UC-->>Client: Upload-Offset: 5242880
 
-        Client->>API: PATCH /v1/uploads/{sessionId}<br/>Upload-Offset: 5242880 (chunk 2)
+        Client->>API: PATCH /v1/uploads/[sessionId]<br/>Upload-Offset: 5242880 (chunk 2)
         API->>UC: ProcessChunkUseCase
         UC->>S3: Upload part 2
         UC->>Redis: Update (offset=10485760, chunks=[..., {2, etag2}])
@@ -821,9 +821,9 @@ sequenceDiagram
         Note over Client,Redis: Resume: Query Current Offset
         Note over Client: Client restarts, needs to know<br/>where to resume
 
-        Client->>API: HEAD /v1/uploads/{sessionId}
+        Client->>API: HEAD /v1/uploads/[sessionId]
         API->>UC: QueryOffsetUseCase.execute()
-        UC->>Redis: HGETALL session:workspace_{id}:upload_{session_id}
+        UC->>Redis: HGETALL session:workspace_[id]:upload_{session_id}
         Redis-->>UC: {offset: 10485760, status: 'uploading', file_size: 104857600}
         UC-->>API: offset=10485760
         API-->>Client: 200 OK<br/>Upload-Offset: 10485760<br/>Upload-Length: 104857600
@@ -834,7 +834,7 @@ sequenceDiagram
     %% Resume Upload from Offset
     rect rgb(200, 255, 200)
         Note over Client,Redis: Resume: Continue Upload
-        Client->>API: PATCH /v1/uploads/{sessionId}<br/>Upload-Offset: 10485760 (chunk 3)
+        Client->>API: PATCH /v1/uploads/[sessionId]<br/>Upload-Offset: 10485760 (chunk 3)
         API->>UC: ProcessChunkUseCase.execute()
 
         UC->>Redis: Get current offset
@@ -852,7 +852,7 @@ sequenceDiagram
     %% Resume Failure: Offset Mismatch
     rect rgb(255, 220, 220)
         Note over Client,Redis: Resume Failure: Offset Mismatch
-        Client->>API: PATCH /v1/uploads/{sessionId}<br/>Upload-Offset: 999999 (incorrect)
+        Client->>API: PATCH /v1/uploads/[sessionId]<br/>Upload-Offset: 999999 (incorrect)
         API->>UC: ProcessChunkUseCase.execute()
         UC->>Redis: Get current offset
         Redis-->>UC: offset=10485760
@@ -868,9 +868,9 @@ sequenceDiagram
         Note over Redis: 24 hours pass since session creation
         Redis->>Redis: TTL expires, session deleted
 
-        Client->>API: HEAD /v1/uploads/{sessionId}
+        Client->>API: HEAD /v1/uploads/[sessionId]
         API->>UC: QueryOffsetUseCase.execute()
-        UC->>Redis: HGETALL session:workspace_{id}:upload_{session_id}
+        UC->>Redis: HGETALL session:workspace_[id]:upload_{session_id}
         Redis-->>UC: (nil) - key not found
         UC-->>API: SessionNotFoundError
         API-->>Client: 404 Not Found<br/>{error: "session_expired",<br/>message: "Upload session expired after 24h"}
@@ -887,7 +887,7 @@ sequenceDiagram
         Redis-->>UC: [session_id_1, session_id_2, session_id_3]
 
         loop For each session_id
-            UC->>Redis: HGETALL session:workspace_{ws_id}:upload_{id}
+            UC->>Redis: HGETALL session:workspace_{ws_id}:upload_[id]
             Redis-->>UC: {file_name, file_size, offset, status}
         end
 
@@ -914,7 +914,7 @@ sequenceDiagram
     %% Domain Error: Checksum Mismatch
     rect rgb(255, 220, 220)
         Note over Client,UC: Domain Error: Checksum Mismatch
-        Client->>API: PATCH /v1/uploads/{id}<br/>Upload-Checksum: sha256 {wrong_hash}
+        Client->>API: PATCH /v1/uploads/[id]<br/>Upload-Checksum: sha256 {wrong_hash}
         API->>UC: ProcessChunkUseCase.execute()
         UC->>UC: Calculate chunk SHA-256
         UC->>UC: Compare with Upload-Checksum header
@@ -932,7 +932,7 @@ sequenceDiagram
     %% Infrastructure Error: Redis Connection Lost
     rect rgb(255, 240, 200)
         Note over Client,Infra: Infrastructure Error: Redis Unavailable
-        Client->>API: PATCH /v1/uploads/{id}
+        Client->>API: PATCH /v1/uploads/[id]
         API->>UC: ProcessChunkUseCase.execute()
         UC->>Infra: RedisSessionStore.get_session()
         Infra->>Infra: Try to connect to Redis
@@ -952,7 +952,7 @@ sequenceDiagram
     %% Infrastructure Error: S3 Throttling
     rect rgb(255, 230, 200)
         Note over Client,Infra: Infrastructure Error: S3 Throttling
-        Client->>API: PATCH /v1/uploads/{id}
+        Client->>API: PATCH /v1/uploads/[id]
         API->>UC: ProcessChunkUseCase.execute()
         UC->>UC: Verify checksum ✓
         UC->>Infra: S3StorageClient.upload_part()
@@ -1010,7 +1010,7 @@ sequenceDiagram
     %% Unexpected Error: Unhandled Exception
     rect rgb(255, 200, 220)
         Note over Client,Middleware: Unexpected Error: Internal Server Error
-        Client->>API: PATCH /v1/uploads/{id}
+        Client->>API: PATCH /v1/uploads/[id]
         API->>UC: ProcessChunkUseCase.execute()
         UC->>UC: Unexpected bug in code<br/>Raises unexpected exception
         UC--xAPI: Exception propagates (not domain exception)
