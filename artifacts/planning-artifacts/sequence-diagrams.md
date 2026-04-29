@@ -82,8 +82,8 @@ graph TB
     Client -->|1. POST /token| Auth
     Auth -->|JWT Token| Client
     Client -->|2. POST /v1/uploads| API
-    Client -->|3. PATCH /v1/uploads/[id]| API
-    Client -->|4. HEAD /v1/uploads/[id]| API
+    Client -->|3. PATCH /v1/uploads/_id_| API
+    Client -->|4. HEAD /v1/uploads/_id_| API
 
     %% Internal Architecture Flow (Clean Architecture)
     API -->|Request| APP
