@@ -38,7 +38,7 @@ sequenceDiagram
             S3->>S3: Delete staged parts
             S3-->>Cleanup: Aborted
             
-            Cleanup->>Redis: DEL session:workspace_{id}:upload_{session_id}
+            Cleanup->>Redis: DEL session:workspace_[id]:upload_[session_id]
             Redis-->>Cleanup: Deleted
             
             Cleanup->>Metrics: record_session_aborted(workspace_id)
