@@ -25,10 +25,74 @@ A FastAPI-based microservice that handles chunked file uploads with resumability
 - **flox** - Development environment manager
 - **uv** - Python package manager (available in flox environment)
 - **Python 3.13** - (available in flox environment)
+- **Docker** - For running external services (Redis, MinIO, NATS, ClamAV)
+- **Docker Compose** - For orchestrating multi-container setup
 
 ## Setup Instructions
 
-### Quick Start with Makefile
+### 1. Start External Services with Docker Compose
+
+Before running the application, start all required external services:
+
+```bash
+# Navigate to docker directory
+cd docker
+
+# Copy environment template (if needed)
+cp ../.env.example ../.env
+
+# Start all services in detached mode
+docker compose up -d
+
+# Verify all services are healthy (this may take up to 2 minutes for ClamAV)
+docker compose ps
+```
+
+**Services Started:**
+- **Redis** (port 6379) - Session state storage with AOF persistence
+- **MinIO** (ports 9000/9001) - S3-compatible object storage
+  - API: http://localhost:9000
+  - Console: http://localhost:9001 (credentials: minioadmin/minioadmin123)
+- **NATS JetStream** (ports 4222/8222) - Event bus for pipeline integration
+  - Client: nats://localhost:4222
+  - Monitoring: http://localhost:8222
+- **ClamAV** (port 3310) - Virus scanning service
+  - Note: Takes 60-120 seconds to download virus definitions on first start
+
+#### Verify Service Health
+
+```bash
+# Check all services are running and healthy
+docker compose ps
+
+# Test Redis connectivity
+docker exec rag-uploader-redis redis-cli ping
+# Expected: PONG
+
+# Test MinIO health
+curl http://localhost:9000/minio/health/live
+# Expected: HTTP 200 OK
+
+# Test NATS health
+curl http://localhost:8222/healthz
+# Expected: HTTP 200 OK
+
+# Test ClamAV connectivity
+echo "PING" | nc localhost 3310
+# Expected: PONG
+```
+
+#### Stop Services
+
+```bash
+# Stop all services (preserves data volumes)
+docker compose down
+
+# Stop and remove all data volumes (clean slate)
+docker compose down -v
+```
+
+### 2. Quick Start with Makefile
 
 The project includes a comprehensive Makefile for all common tasks:
 
@@ -52,7 +116,7 @@ make check
 make format
 ```
 
-### Manual Setup (Alternative)
+### 3. Manual Setup (Alternative)
 
 #### 1. Activate flox environment
 
@@ -301,10 +365,17 @@ This project follows **Clean Architecture** principles:
 
 ## External Dependencies
 
-- **Redis** - Upload session state persistence
-- **MinIO/S3** - Bronze-layer file storage
-- **NATS JetStream** - Event publishing for downstream services
-- **ClamAV** - Virus scanning integration
+All external services are managed via Docker Compose (see `docker/docker-compose.yml`):
+
+- **Redis 7** - Upload session state persistence with AOF durability
+- **MinIO** - S3-compatible bronze-layer file storage with workspace isolation
+- **NATS JetStream** - Event publishing for downstream RAG pipeline services
+- **ClamAV** - Real-time virus scanning with automatic definition updates
+
+**Environment Configuration:**
+- Copy `.env.example` to `.env` and customize as needed
+- Default credentials are provided for local development
+- Production deployments should use secure credential management
 
 ## License
 
