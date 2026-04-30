@@ -84,7 +84,7 @@ test-e2e: ## Run end-to-end tests only
 
 test-coverage: ## Run tests with coverage report
 	@echo "$(GREEN)→ Running tests with coverage...$(NC)"
-	$(FLOX) $(UV) run pytest $(TEST_DIR) --cov=$(SRC_DIR) --cov-report=html --cov-report=term-missing
+	$(FLOX) $(UV) run pytest $(TEST_DIR) --cov=$(SRC_DIR) --cov-config=pytest.ini --cov-report=html --cov-report=term-missing
 
 test-watch: ## Run tests in watch mode (requires pytest-watch)
 	@echo "$(GREEN)→ Running tests in watch mode...$(NC)"

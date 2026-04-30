@@ -1,0 +1,68 @@
+# Ruff configuration for rag-file-uploader
+# PEP 8 enforcement with import sorting and strict formatting
+
+# Target Python version
+target-version = "py313"
+
+# Include and exclude patterns
+include = ["*.py", "*.pyi"]
+exclude = [
+    "__pycache__",
+    ".venv",
+    ".git",
+    "node_modules",
+    "dist",
+    "build",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "htmlcov",
+]
+
+# Line length
+line-length = 100
+
+# Indentation width
+indent-width = 4
+
+[lint]
+# Core linting rules
+select = [
+    "E",      # pycodestyle (PEP 8 enforcement)
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes (undefined names, unused imports)
+    "I",      # isort (import sorting)
+    "N",      # pep8-naming (PEP 8 naming conventions)
+    "UP",     # pyupgrade (Python version idioms)
+    "B",      # flake8-bugbear (common bugs)
+    "C4",     # flake8-comprehensions (comprehension style)
+    "T10",    # flake8-debugger (no print debugging)
+    "PT",     # flake8-pytest-style (pytest best practices)
+]
+
+# Rules to ignore
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "E203",   # whitespace before ':' (conflicts with formatter)
+]
+
+[lint.isort]
+# Import sorting configuration
+known-first-party = ["src"]
+lines-after-imports = 2
+
+[lint.per-file-ignores]
+# DomainException is retained for backwards compatibility with the branch baseline.
+"src/domain/exceptions.py" = ["N818"]
+
+[lint.flake8-pytest-style]
+# Pytest style configuration
+parametrize-names-type = "csv"
+parametrize-values-row-type = "tuple"
+parametrize-values-type = "list"
+
+[format]
+# Code formatting settings
+
+# Quote style
+quote-style = "double"

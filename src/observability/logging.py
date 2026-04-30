@@ -4,7 +4,7 @@ This module configures structlog for JSON-formatted logging with context.
 """
 
 
-def setup_logging():
+def setup_logging() -> None:
     """Configure structlog for structured JSON logging.
 
     Configuration includes:

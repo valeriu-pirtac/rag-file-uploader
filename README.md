@@ -137,7 +137,7 @@ make ci-coverage        # Run CI with coverage report
 uv run pytest
 
 # Run with coverage
-uv run pytest --cov=src --cov-report=html
+uv run pytest --cov=src --cov-config=pytest.ini --cov-report=html
 
 # Run specific test file
 uv run pytest tests/unit/test_example.py
@@ -186,6 +186,99 @@ rag-file-uploader/
 ├── pyproject.toml                   # uv project configuration
 └── uv.lock                          # Dependency lock file
 ```
+
+## Code Quality Standards
+
+This project enforces strict code quality standards to ensure consistency, maintainability, and type safety across the codebase.
+
+### Tools Overview
+
+- **ruff** - Fast all-in-one Python linter and formatter (replaces black, isort, flake8, pylint)
+- **mypy** - Static type checker with strict mode enabled
+- **pytest** - Test discovery and execution framework with asyncio support
+
+### Configuration Files
+
+- `ruff.toml` - Linting and formatting rules (PEP 8, import sorting, line length 100)
+- `mypy.ini` - Type checking with strict mode and Python 3.13 target
+- `pytest.ini` - Test discovery patterns and asyncio configuration
+
+### Running Quality Checks
+
+#### Run all checks
+```bash
+make check              # Runs format-check, lint, and type-check
+```
+
+#### Individual checks
+```bash
+make lint               # Linting with ruff
+make format             # Format code with ruff (modifies files)
+make format-check       # Check formatting without modifying
+make type-check         # Type checking with mypy
+```
+
+#### Manual commands
+```bash
+# Linting
+uv run ruff check src/ tests/
+
+# Formatting
+uv run ruff format src/ tests/
+
+# Type checking
+uv run mypy src/
+```
+
+### Testing
+
+Tests are organized into three categories:
+
+- **Unit tests** (`tests/unit/`) - Domain and application layer tests with no external dependencies
+- **Integration tests** (`tests/integration/`) - Tests for infrastructure implementations (Redis, S3, etc.)
+- **E2E tests** (`tests/e2e/`) - Full API flow tests using FastAPI TestClient
+
+#### Running tests
+```bash
+make test               # Run all tests
+make test-unit          # Run unit tests only
+make test-integration   # Run integration tests only
+make test-e2e           # Run E2E tests only
+make test-coverage      # Run with coverage report (target: ≥80% domain, ≥70% app)
+```
+
+#### Manual commands
+```bash
+# Run all tests
+uv run pytest tests/
+
+# Run with coverage
+uv run pytest tests/ --cov=src --cov-config=pytest.ini --cov-report=html
+
+# Run specific test category
+uv run pytest tests/unit -v
+uv run pytest tests/integration -v
+uv run pytest tests/e2e -v
+```
+
+### Code Style Guidelines
+
+- **Line length**: 100 characters (enforced by ruff)
+- **Naming conventions**: snake_case for functions/variables, PascalCase for classes and exceptions
+- **Imports**: Organized per isort (standard library → third-party → local)
+- **Type annotations**: Strictly required on all function signatures (enforced by mypy)
+- **Async consistency**: All service methods use `async def`, all calls are `await`-ed
+
+### Pre-commit Workflow
+
+Before committing code:
+
+1. Format: `make format`
+2. Lint: `make lint`
+3. Type check: `make type-check`
+4. Test: `make test`
+
+Or use `make check` to run all checks in sequence.
 
 ## Architecture
 
