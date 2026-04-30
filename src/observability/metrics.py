@@ -4,7 +4,7 @@ This module sets up Prometheus metrics for monitoring upload operations.
 """
 
 
-def setup_metrics():
+def setup_metrics() -> None:
     """Configure and register Prometheus metrics.
 
     Metrics to be implemented:

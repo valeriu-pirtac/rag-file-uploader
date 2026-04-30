@@ -6,6 +6,7 @@ middleware, and configuration.
 
 from fastapi import FastAPI
 
+
 app = FastAPI(
     title="RAG File Uploader",
     description="Chunked upload service for RAG pipeline with resumability and integrity verification",
@@ -14,12 +15,12 @@ app = FastAPI(
 
 
 @app.get("/")
-async def root():
+async def root() -> dict[str, str]:
     """Health check endpoint."""
     return {"service": "rag-file-uploader", "status": "healthy", "version": "0.1.0"}
 
 
 @app.get("/health")
-async def health():
+async def health() -> dict[str, str]:
     """Health check endpoint for monitoring."""
     return {"status": "healthy"}
