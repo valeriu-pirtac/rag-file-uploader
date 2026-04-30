@@ -6,6 +6,8 @@
 
 This document contains comprehensive sequence diagrams for all major flows in the RAG file uploader service, created using Mermaid notation.
 
+For static structural views of the same system, see [RAG File Uploader - C4 Architecture](./c4-architecture.md).
+
 ---
 
 ## Table of Contents

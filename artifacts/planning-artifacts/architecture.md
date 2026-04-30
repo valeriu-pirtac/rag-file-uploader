@@ -17,6 +17,8 @@ completedAt: "2026-04-29"
 
 _This document builds collaboratively through step-by-step discovery. Sections are appended as we work through each architectural decision together._
 
+**Structural visualization:** See [RAG File Uploader - C4 Architecture](./c4-architecture.md) for C4 system context, container, and component views of this architecture.
+
 ## Project Context Analysis
 
 **Date:** 2026-04-29  

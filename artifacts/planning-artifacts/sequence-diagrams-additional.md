@@ -16,7 +16,7 @@ sequenceDiagram
     participant Metrics as Metrics Collector
     
     %% Automatic Session Expiry (24h TTL)
-    rect rgb(255, 220, 220)
+    rect rgb(1, 20, 100)
         Note over Redis: Automatic Session TTL Expiry
         Note over Redis: Session created at t=0<br/>TTL set to 86400 seconds (24h)
         
@@ -28,7 +28,7 @@ sequenceDiagram
     end
     
     %% Manual Cleanup Trigger (Abort)
-    rect rgb(255, 240, 200)
+    rect rgb(100, 30, 200)
         Note over Cleanup: Manual Session Cleanup (User Abort)
         Cleanup->>Redis: Scan for sessions with status='aborting'
         Redis-->>Cleanup: [{session_id, s3_upload_id, workspace_id}]
@@ -46,7 +46,7 @@ sequenceDiagram
     end
     
     %% Orphaned Session Detection (Safety Net)
-    rect rgb(240, 220, 255)
+    rect rgb(1, 50, 255)
         Note over Cleanup,S3: Orphaned Session Cleanup (Daily Job)
         Note over Cleanup: Runs once per day
         
@@ -70,7 +70,7 @@ sequenceDiagram
     end
     
     %% S3 Lifecycle Policy (Independent Cleanup)
-    rect rgb(220, 255, 240)
+    rect rgb(25, 100, 1)
         Note over S3: S3 Lifecycle Policy (Automatic)
         Note over S3: Configured lifecycle rule:<br/>"AbortIncompleteMultipartUpload"<br/>DaysAfterInitiation: 7
         
@@ -82,7 +82,7 @@ sequenceDiagram
     end
     
     %% Metrics on Cleanup
-    rect rgb(200, 255, 220)
+    rect rgb(200, 100, 10)
         Note over Cleanup,Metrics: Cleanup Metrics Collection
         Cleanup->>Metrics: Emit metrics
         Metrics->>Metrics: expired_sessions_total (Counter)
