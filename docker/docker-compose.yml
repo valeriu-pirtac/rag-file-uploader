@@ -1,0 +1,95 @@
+services:
+  # Redis - Upload session state store with AOF persistence
+  redis:
+    image: redis:7-alpine
+    container_name: rag-uploader-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - rag-uploader-network
+    restart: unless-stopped
+
+  # MinIO - S3-compatible object storage for bronze-layer files
+  minio:
+    image: minio/minio:latest
+    container_name: rag-uploader-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"  # S3 API
+      - "9001:9001"  # Web Console
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - rag-uploader-network
+    restart: unless-stopped
+
+  # NATS JetStream - Event bus for FILE_LOAD_COMPLETED events
+  nats:
+    image: nats:2.10-alpine
+    container_name: rag-uploader-nats
+    command: ["-js", "-sd", "/data"]
+    ports:
+      - "4222:4222"  # Client connections
+      - "8222:8222"  # HTTP monitoring
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z localhost 4222 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - rag-uploader-network
+    restart: unless-stopped
+
+  # ClamAV - Virus scanning service
+  clamav:
+    image: clamav/clamav:latest
+    container_name: rag-uploader-clamav
+    ports:
+      - "3310:3310"  # clamd TCP socket
+    volumes:
+      - clamav_data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD", "sh", "-c", "echo PING | nc localhost 3310 | grep -q PONG"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s  # ClamAV needs time to download virus definitions
+    networks:
+      - rag-uploader-network
+    restart: unless-stopped
+
+networks:
+  rag-uploader-network:
+    driver: bridge
+    name: rag-uploader-network
+
+volumes:
+  redis_data:
+    name: rag-uploader-redis-data
+  minio_data:
+    name: rag-uploader-minio-data
+  nats_data:
+    name: rag-uploader-nats-data
+  clamav_data:
+    name: rag-uploader-clamav-data

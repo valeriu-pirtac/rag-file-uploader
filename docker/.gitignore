@@ -1,0 +1,14 @@
+# Docker volumes and runtime data
+*.log
+*.pid
+
+# Docker Compose override files
+docker-compose.override.yml
+
+# Local environment files
+.env.local
+.env.*.local
+
+# Temporary files
+tmp/
+temp/
