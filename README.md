@@ -1,3 +1,222 @@
-# File Uploader
+# rag-file-uploader
 
-REST API File Management Service for RAG Platform — Chunked Uploads & Streaming
+**Chunked Upload Service for RAG Pipeline**
+
+A FastAPI-based microservice that handles chunked file uploads with resumability, integrity verification, and event-driven pipeline integration. Built with Clean Architecture for the RAG (Retrieval-Augmented Generation) platform.
+
+## Features
+
+- **Chunked Upload Protocol**: tus-protocol-inspired chunked uploads with SHA-256 verification
+- **Resumability**: 24-hour session persistence enabling resume-from-offset
+- **Multi-Tenant Isolation**: Complete workspace-scoped data separation
+- **Event-Driven**: NATS JetStream integration for downstream RAG pipeline
+- **Security**: JWT authentication with role-based access control
+- **Observability**: Prometheus metrics and structured logging
+
+## Technology Stack
+
+- **Python 3.13** - Latest Python with performance improvements
+- **uv** - Fast Rust-based package manager (10-100x faster than pip)
+- **FastAPI** - Modern async web framework with automatic OpenAPI generation
+- **Clean Architecture** - Domain-driven design with clear dependency flow
+
+## Prerequisites
+
+- **flox** - Development environment manager
+- **uv** - Python package manager (available in flox environment)
+- **Python 3.13** - (available in flox environment)
+
+## Setup Instructions
+
+### Quick Start with Makefile
+
+The project includes a comprehensive Makefile for all common tasks:
+
+```bash
+# Show all available commands
+make help
+
+# One-command setup: create venv and install dependencies
+make setup
+
+# Start development server
+make dev
+
+# Run all tests
+make test
+
+# Run code quality checks
+make check
+
+# Format code
+make format
+```
+
+### Manual Setup (Alternative)
+
+#### 1. Activate flox environment
+
+```bash
+flox activate
+```
+
+#### 2. Install dependencies
+
+```bash
+uv sync
+```
+
+This will:
+
+- Create a virtual environment in `.venv/`
+- Install all production and development dependencies
+- Generate `uv.lock` for reproducible builds
+
+#### 3. Run development server
+
+```bash
+uv run uvicorn src.presentation.main:app --reload
+```
+
+The API will be available at http://localhost:8000
+
+- **Swagger UI**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
+
+## Development Commands
+
+### Using Makefile (Recommended)
+
+```bash
+# Setup & Installation
+make setup              # Initialize project environment
+make install            # Sync dependencies after pyproject.toml changes
+make install-dev        # Install with all dev dependencies
+
+# Testing
+make test               # Run all tests
+make test-unit          # Run unit tests only
+make test-integration   # Run integration tests only
+make test-e2e           # Run E2E tests only
+make test-coverage      # Run tests with coverage report
+
+# Code Quality
+make lint               # Run ruff linter
+make format             # Format code with ruff
+make format-check       # Check formatting without modifying
+make type-check         # Run mypy type checker
+make check              # Run all checks (format, lint, type)
+
+# Development
+make dev                # Start dev server with auto-reload
+make dev-debug          # Start dev server with debug logging
+make shell              # Start Python shell with project context
+
+# Documentation
+make docs               # Build documentation
+make docs-serve         # Serve docs at http://127.0.0.1:8000
+
+# Cleanup
+make clean              # Remove all build artifacts and venv
+make clean-cache        # Remove only cache files
+
+# Utilities
+make info               # Display project information
+make deps-outdated      # Check for outdated dependencies
+make lock               # Regenerate uv.lock file
+
+# CI/CD
+make ci                 # Run full CI pipeline
+make ci-coverage        # Run CI with coverage report
+```
+
+### Manual Commands (Without Makefile)
+
+```bash
+# Run all tests
+uv run pytest
+
+# Run with coverage
+uv run pytest --cov=src --cov-report=html
+
+# Run specific test file
+uv run pytest tests/unit/test_example.py
+
+# Lint and format with ruff
+uv run ruff check src/
+uv run ruff format src/
+
+# Type checking with mypy
+uv run mypy src/
+```
+
+## Project Structure
+
+```
+rag-file-uploader/
+├── src/
+│   ├── domain/                      # Pure business logic, no dependencies
+│   │   ├── entities/                # Domain entities (UploadSession, Chunk, etc.)
+│   │   ├── value_objects/           # Value objects (SHA256Hash, WorkspaceId, etc.)
+│   │   ├── protocols/               # Interfaces for infrastructure
+│   │   ├── services/                # Domain services
+│   │   └── exceptions.py            # Domain exceptions
+│   ├── application/                 # Use cases orchestration
+│   │   ├── use_cases/               # Business workflows
+│   │   ├── dto/                     # Data Transfer Objects
+│   │   └── ports/                   # Application-level interfaces
+│   ├── infrastructure/              # External service implementations
+│   │   ├── redis/                   # Redis session store
+│   │   ├── s3/                      # MinIO/S3 storage client
+│   │   ├── nats/                    # NATS event publisher
+│   │   ├── clamav/                  # ClamAV scanner client
+│   │   ├── auth/                    # JWT validation middleware
+│   │   └── config/                  # Configuration management
+│   ├── presentation/                # FastAPI HTTP layer
+│   │   ├── api/v1/                  # API v1 endpoints
+│   │   └── main.py                  # FastAPI app initialization
+│   └── observability/               # Metrics and logging
+├── tests/
+│   ├── unit/                        # Unit tests (domain + application)
+│   ├── integration/                 # Integration tests (infrastructure)
+│   └── e2e/                         # End-to-end API tests
+├── docker/                          # Docker Compose and Dockerfile
+├── docs/                            # Project documentation
+├── .python-version                  # Python 3.13
+├── pyproject.toml                   # uv project configuration
+└── uv.lock                          # Dependency lock file
+```
+
+## Architecture
+
+This project follows **Clean Architecture** principles:
+
+- **Domain Layer** - Pure business logic with zero external dependencies
+- **Application Layer** - Use case orchestration, depends on Domain only
+- **Infrastructure Layer** - External service implementations via Domain protocols
+- **Presentation Layer** - FastAPI routes, depends on Application use cases
+
+**Dependency Flow**: Presentation → Application → Domain ← Infrastructure (via Protocols)
+
+## Development Workflow
+
+1. **Create feature branch** from `main`
+2. **Implement changes** following Clean Architecture patterns
+3. **Write tests** for new functionality (TDD recommended)
+4. **Run quality checks**: `ruff`, `mypy`, `pytest`
+5. **Submit PR** for code review
+
+## External Dependencies
+
+- **Redis** - Upload session state persistence
+- **MinIO/S3** - Bronze-layer file storage
+- **NATS JetStream** - Event publishing for downstream services
+- **ClamAV** - Virus scanning integration
+
+## License
+
+See [LICENSE](LICENSE) for details.
+
+## Contributing
+
+This project is part of the RAG platform development.
