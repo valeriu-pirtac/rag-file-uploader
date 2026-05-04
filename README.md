@@ -64,7 +64,7 @@ docker compose ps
 - **Redis** (port 6379) - Session state storage with AOF persistence
 - **MinIO** (ports 9000/9001) - S3-compatible object storage
   - API: http://localhost:9000
-  - Console: http://localhost:9001 (credentials: minioadmin/minioadmin123)
+  - Console: http://localhost:9001 (credentials: admin/admin)
 - **NATS JetStream** (ports 4222/8222) - Event bus for pipeline integration
   - Client: nats://localhost:4222
   - Monitoring: http://localhost:8222
