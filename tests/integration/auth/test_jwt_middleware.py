@@ -150,7 +150,7 @@ def test_protected_endpoint_with_expired_token(client, rsa_keys):
     )
 
     assert response.status_code == 401
-    assert "expired" in response.json()["detail"].lower()
+    assert response.json()["detail"] == "Authentication failed"
 
 
 def test_protected_endpoint_with_invalid_signature(client, rsa_keys):
@@ -169,7 +169,7 @@ def test_protected_endpoint_with_invalid_signature(client, rsa_keys):
     )
 
     assert response.status_code == 401
-    assert "invalid" in response.json()["detail"].lower() or "Invalid" in response.json()["detail"]
+    assert response.json()["detail"] == "Authentication failed"
 
 
 def test_protected_endpoint_with_malformed_token(client):
@@ -180,7 +180,7 @@ def test_protected_endpoint_with_malformed_token(client):
     )
 
     assert response.status_code == 401
-    assert "invalid" in response.json()["detail"].lower() or "Invalid" in response.json()["detail"]
+    assert response.json()["detail"] == "Authentication failed"
 
 
 def test_protected_endpoint_without_bearer_prefix(client, rsa_keys):
