@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-04-30T11:34:09Z
-last_updated: 2026-05-04T22:00:00Z
+last_updated: 2026-05-04T18:54:48Z
 project: rag-file-uploader
 project_key: NOKEY
 tracking_system: file-system
@@ -57,7 +57,7 @@ development_status:
   2-3-implement-workspace-scoped-redis-key-prefixing-isolation: done
   2-4-implement-rbac-middleware-for-workspace-roles: done
   2-5-implement-workspace-access-control-rules: done
-  2-6-create-stub-auth-service-for-development: backlog
+  2-6-create-stub-auth-service-for-development: done
   epic-2-retrospective: optional
 
   # Epic 3: Chunked Upload Session Lifecycle

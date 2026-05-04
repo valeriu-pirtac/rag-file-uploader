@@ -139,6 +139,40 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Stub Auth Service - JWT token generation for local development
+  # DEVELOPMENT ONLY - DO NOT USE IN PRODUCTION
+  auth-stub:
+    build:
+      context: ./auth_stub
+      dockerfile: Dockerfile
+    container_name: rag-uploader-auth-stub
+    ports:
+      - "8001:8001"  # HTTP API
+    volumes:
+      - auth_stub_keys:/app/keys  # Persist RSA keys across restarts
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - rag-uploader-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 networks:
   rag-uploader-network:
     driver: bridge
@@ -153,3 +187,5 @@ volumes:
     name: rag-uploader-nats-data
   clamav_data:
     name: rag-uploader-clamav-data
+  auth_stub_keys:
+    name: rag-uploader-auth-stub-keys
