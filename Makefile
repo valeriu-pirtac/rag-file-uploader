@@ -6,6 +6,7 @@ UV := uv
 FLOX := flox activate --
 SRC_DIR := src
 TEST_DIR := tests
+STUB_DIR := docker/auth_stub
 VENV := .venv
 
 # Colors for help output
@@ -47,20 +48,20 @@ install-dev: ## Install with dev dependencies
 
 lint: ## Run ruff linter
 	@echo "$(GREEN)→ Running ruff linter...$(NC)"
-	$(FLOX) $(UV) run ruff check $(SRC_DIR) $(TEST_DIR)
+	$(FLOX) $(UV) run ruff check $(SRC_DIR) $(TEST_DIR) $(STUB_DIR)
 
 format: ## Format code with ruff
 	@echo "$(GREEN)→ Formatting code with ruff...$(NC)"
-	$(FLOX) $(UV) run ruff format $(SRC_DIR) $(TEST_DIR)
-	$(FLOX) $(UV) run ruff check --fix $(SRC_DIR) $(TEST_DIR)
+	$(FLOX) $(UV) run ruff format $(SRC_DIR) $(TEST_DIR) $(STUB_DIR)
+	$(FLOX) $(UV) run ruff check --fix $(SRC_DIR) $(TEST_DIR) $(STUB_DIR)
 
 format-check: ## Check code formatting without modifying files
 	@echo "$(GREEN)→ Checking code formatting...$(NC)"
-	$(FLOX) $(UV) run ruff format --check $(SRC_DIR) $(TEST_DIR)
+	$(FLOX) $(UV) run ruff format --check $(SRC_DIR) $(TEST_DIR) $(STUB_DIR)
 
 type-check: ## Run mypy type checker
 	@echo "$(GREEN)→ Running mypy type checker...$(NC)"
-	$(FLOX) $(UV) run mypy $(SRC_DIR)
+	$(FLOX) $(UV) run mypy $(SRC_DIR) $(STUB_DIR)
 
 check: format-check lint type-check ## Run all code quality checks (format, lint, type)
 
