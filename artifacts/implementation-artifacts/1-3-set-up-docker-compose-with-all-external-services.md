@@ -1,6 +1,6 @@
 # Story 1.3: Set Up Docker Compose with All External Services
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -26,7 +26,7 @@ So that **all external dependencies are available locally for development and te
 
 6. **And** all services start successfully with `docker compose up -d`
 
-7. **And** health checks pass for all services within 30 seconds
+7. **And** health checks pass for all services within reasonable timeframes (ClamAV: 120 seconds for virus definition downloads; all other services: 30 seconds)
 
 ## Tasks / Subtasks
 
@@ -55,6 +55,40 @@ So that **all external dependencies are available locally for development and te
   - [x] Verify MinIO accessibility
   - [x] Verify NATS JetStream connectivity
   - [x] Verify ClamAV clamd connectivity
+
+### Review Findings
+
+**Decision Needed:**
+- [x] [Review][Decision] Development vs Production Security Posture — RESOLVED: Keep dev-only. This is explicitly a development setup. Production security (auth, encryption, restricted ports) will be addressed in separate deployment stories.
+- [x] [Review][Decision] Health Check Timing vs Service Reality — RESOLVED: AC #7 amended to "health checks pass within reasonable timeframes (ClamAV: 120s for virus definition downloads; all other services: 30s)"
+
+**Patches:**
+- [x] [Review][Patch] MinIO and ClamAV use `:latest` tags [docker/docker-compose.yml:22,65] — Pinned MinIO to RELEASE.2025-09-07T16-13-09Z and ClamAV to 1.5
+- [x] [Review][Patch] Missing container resource limits [docker/docker-compose.yml] — Added memory/CPU limits and reservations to all services
+- [x] [Review][Patch] All services run as root [docker/docker-compose.yml] — Added non-root user directives for Redis (999:999) and NATS (1000:1000)
+- [x] [Review][Patch] Health check tool dependencies not verified [docker/docker-compose.yml] — Fixed MinIO to use built-in `mc ready local`, ClamAV to use built-in clamdcheck.sh
+- [x] [Review][Patch] No service startup dependencies [docker/docker-compose.yml] — Added `depends_on` with health conditions for NATS and ClamAV
+- [x] [Review][Patch] No log rotation configured [docker/docker-compose.yml] — Added json-file logging driver with 10MB max-size and 3 max-files to all services
+- [x] [Review][Patch] NATS health check only tests port, not JetStream [docker/docker-compose.yml:54] — Updated to use wget with `js-enabled-only=true` query parameter
+- [x] [Review][Patch] Port conflict handling missing [README.md] — Added Port Requirements section documenting all required ports
+- [x] [Review][Patch] Redis memory unbounded [docker/docker-compose.yml:6] — Added `--maxmemory 512mb --maxmemory-policy allkeys-lru` configuration
+
+**Deferred:**
+- [x] [Review][Defer] MinIO server-side encryption not configured [docker/docker-compose.yml] — deferred to Epic 5 per spec notes
+- [x] [Review][Defer] Missing MinIO bucket initialization [docker/docker-compose.yml] — application-level concern, handled in later stories
+- [x] [Review][Defer] Missing NATS stream pre-configuration [docker/docker-compose.yml] — application concern, handled in Epic 5
+- [x] [Review][Defer] Redis AOF without RDB snapshots [docker/docker-compose.yml:6] — spec requires AOF only, RDB is future enhancement
+- [x] [Review][Defer] Volume backup strategy not documented [docker/docker-compose.yml] — operational concern, future operations guide
+- [x] [Review][Defer] Multiple compose instances conflict [docker/docker-compose.yml] — developer responsibility
+- [x] [Review][Defer] Secrets in plain environment variables [.env.example] — production deployments use external secrets management
+- [x] [Review][Defer] JWT configuration commented [.env.example:39] — marked for future implementation in Epic 2
+- [x] [Review][Defer] Network name collision possible [docker/docker-compose.yml:82] — acceptable trade-off
+- [x] [Review][Defer] ClamAV scan queue unbounded [docker/docker-compose.yml:65] — application concern, Epic 5
+- [x] [Review][Defer] MinIO/NATS storage unbounded [docker/docker-compose.yml] — operational/application concern
+- [x] [Review][Defer] MAX_CONCURRENT_UPLOADS validation [.env.example:36] — application validation in Story 1.4
+- [x] [Review][Defer] Volume permission failures [docker/docker-compose.yml] — handled automatically by Docker
+- [x] [Review][Defer] ClamAV definition update failure [docker/docker-compose.yml:65] — handled by official image auto-update
+- [x] [Review][Defer] Standard ports conflict risk [docker/docker-compose.yml] — documented in README
 
 ## Dev Notes
 

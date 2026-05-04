@@ -28,6 +28,18 @@ A FastAPI-based microservice that handles chunked file uploads with resumability
 - **Docker** - For running external services (Redis, MinIO, NATS, ClamAV)
 - **Docker Compose** - For orchestrating multi-container setup
 
+### Port Requirements
+
+⚠️ **Ensure the following ports are available before starting Docker services:**
+- **6379** - Redis
+- **9000** - MinIO S3 API
+- **9001** - MinIO Web Console
+- **4222** - NATS Client Connections
+- **8222** - NATS HTTP Monitoring
+- **3310** - ClamAV TCP Socket
+
+If any ports are already in use, stop the conflicting services or modify the port mappings in `docker/docker-compose.yml`.
+
 ## Setup Instructions
 
 ### 1. Start External Services with Docker Compose
