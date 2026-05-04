@@ -5,3 +5,8 @@ Implements JWT token validation middleware with:
 - Workspace-scoped token claims
 - Role-based access control (owner/collaborator)
 """
+
+from src.infrastructure.auth.jwt_validator import JWTValidator
+
+
+__all__ = ["JWTValidator"]
