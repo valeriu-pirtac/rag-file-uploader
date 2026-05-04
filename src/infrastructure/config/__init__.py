@@ -1,7 +1,6 @@
-"""Configuration management - Pydantic Settings.
+"""Configuration management infrastructure layer."""
 
-Implements type-safe configuration loading from environment variables with:
-- Pydantic validation
-- .env file support
-- Clear error messages for missing config
-"""
+from src.infrastructure.config.settings import AppSettings, get_settings
+
+
+__all__ = ["AppSettings", "get_settings"]
