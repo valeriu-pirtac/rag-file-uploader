@@ -4,15 +4,13 @@ This module initializes the FastAPI application with all routers,
 middleware, and configuration.
 """
 
-from typing import Annotated
-
 import structlog
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from src.domain.exceptions import AuthenticationError
-from src.domain.value_objects.jwt_claims import JWTClaims
-from src.presentation.api.middleware.auth import get_current_user, get_jwt_validator
+from src.presentation.api.middleware.auth import get_jwt_validator
+from src.presentation.api.v1.routers import uploads
 
 
 log = structlog.get_logger(__name__)
@@ -23,6 +21,10 @@ app = FastAPI(
     description="Chunked upload service for RAG pipeline with resumability and integrity verification",
     version="0.1.0",
 )
+
+
+# Include routers
+app.include_router(uploads.router)
 
 
 @app.middleware("http")
@@ -36,8 +38,8 @@ async def jwt_validation_middleware(request: Request, call_next):  # type: ignor
     if request.url.path in ["/", "/health"]:
         return await call_next(request)
 
-    # Require authentication for /v1/* endpoints
-    if request.url.path.startswith("/v1/"):
+    # Require authentication for /v1/* endpoints (including exact /v1 path)
+    if request.url.path == "/v1" or request.url.path.startswith("/v1/"):
         authorization = request.headers.get("Authorization")
         if not authorization:
             log.warning("middleware_auth_failed", reason="missing_header", path=request.url.path)
@@ -89,19 +91,3 @@ async def root() -> dict[str, str]:
 async def health() -> dict[str, str]:
     """Health check endpoint for monitoring."""
     return {"status": "healthy"}
-
-
-# Protected endpoint example - requires JWT authentication
-@app.get("/v1/uploads")
-async def list_uploads(
-    current_user: Annotated[JWTClaims, Depends(get_current_user)],
-) -> dict[str, str]:
-    """List uploads for the authenticated user's workspace.
-
-    This endpoint requires JWT authentication.
-    """
-    return {
-        "message": "uploads endpoint",
-        "workspace_id": str(current_user.workspace_id),
-        "user_id": str(current_user.user_id),
-    }
