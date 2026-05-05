@@ -154,18 +154,19 @@ def dedup_key(workspace_id: UUID) -> str:
 
 
 def rate_limit_key(workspace_id: UUID) -> str:
-    """Generate workspace-scoped rate limit counter key.
+    """Generate workspace-scoped rate limit hash key.
 
     Rate limit keys track concurrent upload count per workspace. Each workspace
     has independent rate limits (default: 10 concurrent uploads).
 
-    Pattern: ratelimit:workspace_{workspace_id}:active_uploads
+    Pattern: ratelimit:workspace_{workspace_id} (hash key)
+    Field: active_uploads (use with HINCRBY)
 
     Args:
         workspace_id: Workspace UUID for isolation boundary (FR26)
 
     Returns:
-        Redis key string for rate limit counter storage
+        Redis hash key string for rate limit counter storage
 
     Raises:
         ValueError: If workspace_id is None or NIL UUID
@@ -179,17 +180,33 @@ def rate_limit_key(workspace_id: UUID) -> str:
         >>> from uuid import UUID
         >>> ws = UUID('12345678-1234-5678-1234-567812345678')
         >>> rate_limit_key(ws)
-        'ratelimit:workspace_12345678-1234-5678-1234-567812345678:active_uploads'
+        'ratelimit:workspace_12345678-1234-5678-1234-567812345678'
+        >>> rate_limit_field()
+        'active_uploads'
 
     Storage Schema:
-        Type: Redis String (integer counter)
-        Operations: INCR (on upload start), DECR (on complete/abort)
+        Type: Redis Hash (field: active_uploads)
+        Operations: HINCRBY (atomic increment), HGET (query), HSET (reset)
         Limit: MAX_CONCURRENT_UPLOADS per workspace (default: 10)
 
     References:
         - FR26: Rate limits enforced per workspace
         - NFR-S5: Multi-tenant isolation
         - Story 3.3: Rate Limiter (primary consumer)
+        - AC#3: Uses HINCRBY for atomic counter operations
     """
     _validate_workspace_id(workspace_id)
-    return f"ratelimit:workspace_{workspace_id}:active_uploads"
+    return f"ratelimit:workspace_{workspace_id}"
+
+
+def rate_limit_field() -> str:
+    """Get field name for rate limit counter in Redis hash.
+
+    Returns:
+        Field name: 'active_uploads'
+
+    Examples:
+        >>> rate_limit_field()
+        'active_uploads'
+    """
+    return "active_uploads"

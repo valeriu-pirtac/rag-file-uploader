@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-04-30T11:34:09Z
-last_updated: 2026-05-05T08:45:00Z
+last_updated: 2026-05-05T11:50:51Z
 project: rag-file-uploader
 project_key: NOKEY
 tracking_system: file-system
@@ -64,7 +64,7 @@ development_status:
   epic-3: in-progress
   3-1-create-upload-session-domain-entities-and-value-objects: done
   3-2-implement-redis-session-store-infrastructure: done
-  3-3-implement-per-workspace-rate-limiting: backlog
+  3-3-implement-per-workspace-rate-limiting: done
   3-4-create-initiate-upload-session-use-case-post-v1-uploads: backlog
   3-5-implement-post-v1-uploads-api-endpoint: backlog
   3-6-implement-chunk-sha-256-verification-service: backlog

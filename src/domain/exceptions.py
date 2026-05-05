@@ -77,6 +77,55 @@ class ChecksumMismatchError(DomainException):
     pass
 
 
+class RateLimitExceededError(DomainException):
+    """Raised when workspace exceeds concurrent upload limit.
+
+    This exception is thrown when a workspace attempts to start a new upload
+    session but has already reached the maximum number of concurrent active
+    uploads (MAX_CONCURRENT_UPLOADS).
+
+    Attributes:
+        workspace_id: The workspace that exceeded the limit
+        current_count: Current number of active uploads for the workspace
+        limit: Maximum allowed concurrent uploads per workspace
+        retry_after_seconds: Suggested retry delay in seconds (default: 60)
+    """
+
+    def __init__(
+        self,
+        workspace_id: str,
+        current_count: int,
+        limit: int,
+        retry_after_seconds: int = 60,
+    ) -> None:
+        """Initialize rate limit exceeded error.
+
+        Args:
+            workspace_id: The workspace UUID as string
+            current_count: Current number of active uploads
+            limit: Maximum allowed concurrent uploads
+            retry_after_seconds: Suggested retry delay (default: 60 seconds)
+
+        Raises:
+            ValueError: If current_count < 0, limit <= 0, or retry_after_seconds <= 0
+        """
+        if current_count < 0:
+            raise ValueError("current_count cannot be negative")
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        if retry_after_seconds <= 0:
+            raise ValueError("retry_after_seconds must be positive")
+
+        self.workspace_id = workspace_id
+        self.current_count = current_count
+        self.limit = limit
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(
+            f"Workspace {workspace_id} has {current_count} active uploads "
+            f"(limit: {limit}). Retry after {retry_after_seconds} seconds."
+        )
+
+
 class DuplicateFileError(DomainException):
     """Raised when a file with the same SHA-256 already exists in the workspace."""
 
