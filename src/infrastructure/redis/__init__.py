@@ -10,6 +10,10 @@ Provides workspace-scoped key generation functions ensuring multi-tenant isolati
 - session_key(): Upload session storage keys
 - dedup_key(): File deduplication scope keys
 - rate_limit_key(): Rate limit counter keys
+
+Session Store:
+Implements ISessionStore protocol for durable session persistence:
+- RedisSessionStore: Redis-backed session storage with TTL
 """
 
 from src.infrastructure.redis.key_builder import (
@@ -17,6 +21,15 @@ from src.infrastructure.redis.key_builder import (
     rate_limit_key,
     session_key,
 )
+from src.infrastructure.redis.session_store import RedisSessionStore
+
+
+__all__ = [
+    "dedup_key",
+    "rate_limit_key",
+    "session_key",
+    "RedisSessionStore",
+]
 
 
 __all__ = [
