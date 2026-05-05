@@ -12,6 +12,7 @@ Tests verify:
 """
 
 import asyncio
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -29,7 +30,7 @@ REDIS_TEST_URL = "redis://localhost:6379/1"  # Use DB 1 for tests
 
 
 @pytest.fixture
-async def redis_client() -> aioredis.Redis:
+async def redis_client() -> AsyncGenerator[None, aioredis.Redis]:
     """Create Redis client for integration tests.
 
     Connects to Redis instance at localhost:6379 (DB 1).

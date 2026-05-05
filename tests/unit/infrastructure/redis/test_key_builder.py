@@ -9,6 +9,7 @@ import pytest
 
 from src.infrastructure.redis.key_builder import (
     dedup_key,
+    rate_limit_field,
     rate_limit_key,
     session_key,
 )
@@ -206,15 +207,15 @@ class TestRateLimitKey:
     """Tests for rate_limit_key() - rate limit counter keys."""
 
     def test_generates_correct_pattern(self) -> None:
-        """Test rate_limit_key follows pattern: ratelimit:workspace_{id}:active_uploads."""
+        """Test rate_limit_key follows pattern: ratelimit:workspace_{id} (hash key)."""
         ws_id = UUID("12345678-1234-5678-1234-567812345678")
 
         key = rate_limit_key(ws_id)
 
-        expected = f"ratelimit:workspace_{ws_id}:active_uploads"
+        expected = f"ratelimit:workspace_{ws_id}"
         assert key == expected
         assert key.startswith("ratelimit:workspace_")
-        assert key.endswith(":active_uploads")
+        assert not key.endswith(":active_uploads")  # Field stored separately
 
     def test_with_valid_uuid(self) -> None:
         """Test rate_limit_key with valid random UUID."""
@@ -224,7 +225,7 @@ class TestRateLimitKey:
 
         assert str(ws_id) in key
         assert key.startswith("ratelimit:")
-        assert ":active_uploads" in key
+        assert ":active_uploads" not in key  # Hash storage: field separate from key
 
     def test_raises_error_on_none_workspace_id(self) -> None:
         """Test rate_limit_key raises ValueError when workspace_id is None."""
@@ -258,14 +259,15 @@ class TestRateLimitKey:
         assert str(ws_id_2) in key_2
 
     def test_uses_snake_case_with_colon_separators(self) -> None:
-        """Test rate_limit_key uses snake_case with colon separators."""
+        """Test rate_limit_key uses snake_case with colon separator."""
         ws_id = uuid4()
 
         key = rate_limit_key(ws_id)
 
-        assert key.count(":") == 2  # Two colon separators
+        assert key.count(":") == 1  # One colon separator (hash key pattern)
         assert "workspace_" in key
-        assert "active_uploads" in key
+        # Hash storage: field name not in key (stored separately)
+        assert "active_uploads" not in key
         # Ensure no kebab-case or camelCase
         assert "-workspace-" not in key
         assert "Workspace" not in key
@@ -279,6 +281,33 @@ class TestRateLimitKey:
             key = rate_limit_key(ws_id)
             assert key not in keys, "Duplicate key generated"
             keys.add(key)
+
+
+class TestRateLimitField:
+    """Tests for rate_limit_field() - returns hash field name for rate limiting."""
+
+    def test_returns_active_uploads_field_name(self) -> None:
+        """Test rate_limit_field returns 'active_uploads' field name."""
+        field = rate_limit_field()
+        assert field == "active_uploads"
+
+    def test_returns_string(self) -> None:
+        """Test rate_limit_field returns string type."""
+        field = rate_limit_field()
+        assert isinstance(field, str)
+
+    def test_is_consistent(self) -> None:
+        """Test rate_limit_field returns same value on multiple calls."""
+        field1 = rate_limit_field()
+        field2 = rate_limit_field()
+        assert field1 == field2
+
+    def test_uses_snake_case(self) -> None:
+        """Test rate_limit_field uses snake_case naming convention."""
+        field = rate_limit_field()
+        assert "_" in field
+        assert field.islower()
+        assert "-" not in field  # No kebab-case
 
 
 class TestPatternCompliance:
