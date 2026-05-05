@@ -1,5 +1,13 @@
 """Data Transfer Objects (DTOs).
 
-Contains data structures for cross-layer communication,
-such as request/response objects for use cases.
+This module exports all DTOs used for data transfer between application layers.
 """
+
+from src.application.dto.upload_request import InitiateUploadRequest
+from src.application.dto.upload_response import InitiateUploadResponse
+
+
+__all__ = [
+    "InitiateUploadRequest",
+    "InitiateUploadResponse",
+]
