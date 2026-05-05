@@ -72,9 +72,74 @@ class SerializationError(InfrastructureError):
 
 
 class ChecksumMismatchError(DomainException):
-    """Raised when chunk checksum verification fails."""
+    """Raised when chunk checksum verification fails.
 
-    pass
+    This exception indicates that the SHA-256 hash computed from the uploaded
+    chunk data does not match the checksum provided by the client in the
+    Upload-Checksum header. This can occur due to:
+
+    - Network corruption during transmission
+    - Client-side checksum computation error
+    - Intentional tampering attempt
+    - Partial chunk reception (incomplete data)
+
+    Attributes:
+        expected_checksum: The SHA-256 hash provided by client
+        computed_checksum: The SHA-256 hash computed from received data
+        chunk_index: Optional chunk sequence number
+        chunk_size: Size of chunk data in bytes
+    """
+
+    def __init__(
+        self,
+        expected_checksum: str,
+        computed_checksum: str,
+        chunk_index: int | None = None,
+        chunk_size: int = 0,
+    ) -> None:
+        """Initialize checksum mismatch error.
+
+        Args:
+            expected_checksum: The SHA-256 hash provided by client
+            computed_checksum: The SHA-256 hash computed from received data
+            chunk_index: Optional chunk sequence number for multi-chunk debugging
+            chunk_size: Size of chunk data in bytes for diagnostic context
+
+        Example:
+            >>> error = ChecksumMismatchError(
+            ...     expected_checksum="b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            ...     computed_checksum="a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447",
+            ...     chunk_index=42,
+            ...     chunk_size=5242880
+            ... )
+            >>> str(error)
+            'Chunk checksum verification failed: expected b94d27b..., got a948904... (chunk 42) (5242880 bytes)'
+        """
+        # Validate inputs
+        if not expected_checksum:
+            raise ValueError("expected_checksum cannot be empty")
+        if not computed_checksum:
+            raise ValueError("computed_checksum cannot be empty")
+        if chunk_index is not None and chunk_index < 0:
+            raise ValueError("chunk_index cannot be negative")
+        if chunk_size < 0:
+            raise ValueError("chunk_size cannot be negative")
+
+        self.expected_checksum = expected_checksum
+        self.computed_checksum = computed_checksum
+        self.chunk_index = chunk_index
+        self.chunk_size = chunk_size
+
+        message = (
+            f"Chunk checksum verification failed: "
+            f"expected {expected_checksum}, got {computed_checksum}"
+        )
+        if chunk_index is not None:
+            message += f" (chunk {chunk_index})"
+        if chunk_size > 0:
+            message += f" ({chunk_size} bytes)"
+
+        super().__init__(message)
 
 
 class RateLimitExceededError(DomainException):
