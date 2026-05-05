@@ -674,3 +674,469 @@ def test_initiate_upload_response_iso8601_datetime(
     assert "T" in expires_at_str
     # Verify parseable as ISO 8601
     datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
+
+
+# ============================================================================
+# PATCH /v1/uploads/{id} Endpoint Tests (Story 3.8)
+# ============================================================================
+
+
+# Test Fixtures for PATCH endpoint
+
+
+@pytest.fixture
+def mock_process_chunk_use_case() -> AsyncMock:
+    """Create mock ProcessChunkUseCase for testing."""
+    from src.application.use_cases.process_chunk import ProcessChunkUseCase
+
+    return AsyncMock(spec=ProcessChunkUseCase)
+
+
+@pytest.fixture
+def valid_chunk_data() -> bytes:
+    """Create valid 5MB chunk data."""
+    return b"x" * 5242880
+
+
+@pytest.fixture
+def valid_chunk_checksum() -> str:
+    """Compute valid SHA-256 checksum for test chunk (hex format)."""
+    import hashlib
+
+    return hashlib.sha256(b"x" * 5242880).hexdigest()
+
+
+@pytest.fixture
+def valid_chunk_checksum_base64() -> str:
+    """Compute valid SHA-256 checksum in base64 format."""
+    import base64
+    import hashlib
+
+    checksum_bytes = hashlib.sha256(b"x" * 5242880).digest()
+    return base64.b64encode(checksum_bytes).decode()
+
+
+@pytest.fixture
+def valid_upload_headers(valid_chunk_checksum: str) -> dict[str, str]:
+    """Create valid request headers for PATCH endpoint."""
+    return {
+        "Authorization": "Bearer valid-token",
+        "Upload-Offset": "0",
+        "Upload-Length": "10485760",
+        "Upload-Checksum": f"sha256 {valid_chunk_checksum}",
+        "Content-Type": "application/offset+octet-stream",
+    }
+
+
+@pytest.fixture
+def app_with_patch_endpoint(
+    mock_process_chunk_use_case: AsyncMock,
+    mock_current_user_owner: JWTClaims,
+) -> FastAPI:
+    """Create FastAPI test app with mocked dependencies for PATCH endpoint."""
+    test_app = FastAPI()
+    test_app.include_router(uploads.router)
+
+    # Override dependencies with mocks
+    async def override_get_process_chunk_use_case() -> AsyncMock:
+        return mock_process_chunk_use_case
+
+    # Mock Redis client to avoid settings requirement
+    def override_get_redis_client() -> MagicMock:
+        return MagicMock()
+
+    # Mock require_role to return the mock user
+    from src.domain.value_objects.workspace_role import WorkspaceRole
+    from src.infrastructure.auth.rbac_middleware import require_role
+    from src.presentation.api.middleware.auth import get_current_user
+
+    async def override_require_role() -> JWTClaims:
+        return mock_current_user_owner
+
+    async def override_get_current_user() -> JWTClaims:
+        return mock_current_user_owner
+
+    # Override all dependencies to avoid real Redis/settings/auth
+    test_app.dependency_overrides[uploads.get_process_chunk_use_case] = (
+        override_get_process_chunk_use_case
+    )
+    test_app.dependency_overrides[uploads.get_redis_client] = override_get_redis_client
+    test_app.dependency_overrides[require_role(WorkspaceRole.OWNER)] = override_require_role
+    test_app.dependency_overrides[get_current_user] = override_get_current_user
+
+    return test_app
+
+
+@pytest.fixture
+def client_with_patch(app_with_patch_endpoint: FastAPI) -> TestClient:
+    """Create FastAPI test client for PATCH endpoint."""
+    return TestClient(app_with_patch_endpoint)
+
+
+# Happy Path Tests for PATCH endpoint
+
+
+def test_upload_chunk_success(
+    client_with_patch: TestClient,
+    mock_process_chunk_use_case: AsyncMock,
+    mock_current_user_owner: JWTClaims,
+    valid_chunk_data: bytes,
+    valid_upload_headers: dict[str, str],
+) -> None:
+    """Test happy path: valid chunk upload returns 204 with Upload-Offset header.
+
+    Validates:
+        - 204 No Content status code
+        - Upload-Offset header present with new offset value
+        - Use case executed with correct DTO
+        - workspace_id extracted from JWT claims
+    """
+    from src.application.dto.process_chunk_response import ProcessChunkResponse
+
+    # Mock use case response
+    upload_id = uuid4()
+    new_offset = 5242880
+    mock_process_chunk_use_case.execute.return_value = ProcessChunkResponse(new_offset=new_offset)
+
+    # Make request
+    response = client_with_patch.patch(
+        f"/v1/uploads/{upload_id}",
+        headers=valid_upload_headers,
+        content=valid_chunk_data,
+    )
+
+    # Assertions
+    assert response.status_code == 204
+    assert response.content == b""  # No Content
+    assert "Upload-Offset" in response.headers
+    assert response.headers["Upload-Offset"] == str(new_offset)
+    mock_process_chunk_use_case.execute.assert_called_once()
+
+    # Verify DTO structure
+    call_args = mock_process_chunk_use_case.execute.call_args[0][0]
+    assert call_args.workspace_id == mock_current_user_owner.workspace_id
+    assert call_args.session_id == upload_id
+    assert call_args.chunk_data == valid_chunk_data
+    assert call_args.chunk_offset == 0
+    assert len(call_args.chunk_checksum) == 64  # hex format
+
+
+def test_upload_chunk_base64_checksum_decoding(
+    client_with_patch: TestClient,
+    mock_process_chunk_use_case: AsyncMock,
+    valid_chunk_data: bytes,
+    valid_chunk_checksum_base64: str,
+    valid_chunk_checksum: str,
+) -> None:
+    """Test base64 checksum decoding to hex format.
+
+    Validates:
+        - Base64 checksum in header is decoded correctly
+        - DTO receives hex format checksum
+        - Request succeeds
+    """
+    from src.application.dto.process_chunk_response import ProcessChunkResponse
+
+    # Mock use case response
+    upload_id = uuid4()
+    mock_process_chunk_use_case.execute.return_value = ProcessChunkResponse(new_offset=5242880)
+
+    # Make request with base64 checksum
+    headers = {
+        "Authorization": "Bearer valid-token",
+        "Upload-Offset": "0",
+        "Upload-Length": "10485760",
+        "Upload-Checksum": f"sha256 {valid_chunk_checksum_base64}",
+        "Content-Type": "application/offset+octet-stream",
+    }
+
+    response = client_with_patch.patch(
+        f"/v1/uploads/{upload_id}",
+        headers=headers,
+        content=valid_chunk_data,
+    )
+
+    # Verify success
+    assert response.status_code == 204
+
+    # Verify DTO received hex checksum
+    call_args = mock_process_chunk_use_case.execute.call_args[0][0]
+    assert call_args.chunk_checksum == valid_chunk_checksum.lower()
+
+
+def test_upload_chunk_hex_checksum_parsing(
+    client_with_patch: TestClient,
+    mock_process_chunk_use_case: AsyncMock,
+    valid_chunk_data: bytes,
+    valid_chunk_checksum: str,
+) -> None:
+    """Test hex checksum parsing (already in correct format).
+
+    Validates:
+        - Hex checksum in header is passed through directly
+        - DTO receives hex format checksum
+        - Request succeeds
+    """
+    from src.application.dto.process_chunk_response import ProcessChunkResponse
+
+    # Mock use case response
+    upload_id = uuid4()
+    mock_process_chunk_use_case.execute.return_value = ProcessChunkResponse(new_offset=5242880)
+
+    # Make request with hex checksum (already hex)
+    headers = {
+        "Authorization": "Bearer valid-token",
+        "Upload-Offset": "0",
+        "Upload-Length": "10485760",
+        "Upload-Checksum": f"sha256 {valid_chunk_checksum}",
+        "Content-Type": "application/offset+octet-stream",
+    }
+
+    response = client_with_patch.patch(
+        f"/v1/uploads/{upload_id}",
+        headers=headers,
+        content=valid_chunk_data,
+    )
+
+    # Verify success
+    assert response.status_code == 204
+
+    # Verify DTO received hex checksum
+    call_args = mock_process_chunk_use_case.execute.call_args[0][0]
+    assert call_args.chunk_checksum == valid_chunk_checksum.lower()
+
+
+# Error Handling Tests for PATCH endpoint
+
+
+def test_upload_chunk_session_not_found(
+    client_with_patch: TestClient,
+    mock_process_chunk_use_case: AsyncMock,
+    valid_chunk_data: bytes,
+    valid_upload_headers: dict[str, str],
+) -> None:
+    """Test session not found error returns 404 with details.
+
+    Validates:
+        - 404 Not Found status code
+        - Structured error response with SESSION_NOT_FOUND code
+        - Details include session_id and suggestion
+    """
+    from src.domain.exceptions import SessionNotFoundError
+
+    # Mock use case to raise SessionNotFoundError
+    upload_id = uuid4()
+    mock_process_chunk_use_case.execute.side_effect = SessionNotFoundError(
+        f"Upload session {upload_id} not found or expired"
+    )
+
+    # Make request
+    response = client_with_patch.patch(
+        f"/v1/uploads/{upload_id}",
+        headers=valid_upload_headers,
+        content=valid_chunk_data,
+    )
+
+    # Assertions
+    assert response.status_code == 404
+    response_data = response.json()
+    assert response_data["detail"]["error"] == "SESSION_NOT_FOUND"
+    assert "message" in response_data["detail"]
+    assert "details" in response_data["detail"]
+    assert response_data["detail"]["details"]["session_id"] == str(upload_id)
+    assert "suggestion" in response_data["detail"]["details"]
+
+
+def test_upload_chunk_offset_mismatch(
+    client_with_patch: TestClient,
+    mock_process_chunk_use_case: AsyncMock,
+    valid_chunk_data: bytes,
+    valid_upload_headers: dict[str, str],
+) -> None:
+    """Test offset mismatch error returns 409 with expected/received offsets.
+
+    Validates:
+        - 409 Conflict status code
+        - Structured error response with OFFSET_MISMATCH code
+        - Details include expected_offset and received_offset
+    """
+    from src.domain.exceptions import OffsetMismatchError
+
+    # Mock use case to raise OffsetMismatchError
+    upload_id = uuid4()
+    mock_process_chunk_use_case.execute.side_effect = OffsetMismatchError(
+        expected_offset=5242880,
+        received_offset=0,
+        session_id=upload_id,
+    )
+
+    # Make request
+    response = client_with_patch.patch(
+        f"/v1/uploads/{upload_id}",
+        headers=valid_upload_headers,
+        content=valid_chunk_data,
+    )
+
+    # Assertions
+    assert response.status_code == 409
+    response_data = response.json()
+    assert response_data["detail"]["error"] == "OFFSET_MISMATCH"
+    assert "message" in response_data["detail"]
+    assert response_data["detail"]["details"]["expected_offset"] == 5242880
+    assert response_data["detail"]["details"]["received_offset"] == 0
+    assert "suggestion" in response_data["detail"]["details"]
+
+
+def test_upload_chunk_invalid_content_type(
+    client_with_patch: TestClient,
+    mock_process_chunk_use_case: AsyncMock,
+    valid_chunk_data: bytes,
+    valid_chunk_checksum: str,
+) -> None:
+    """Test invalid Content-Type returns 415.
+
+    Validates:
+        - 415 Unsupported Media Type status code
+        - Structured error response with UNSUPPORTED_CONTENT_TYPE code
+        - Details include provided and required content type
+    """
+    upload_id = uuid4()
+
+    # Make request with wrong Content-Type
+    headers = {
+        "Authorization": "Bearer valid-token",
+        "Upload-Offset": "0",
+        "Upload-Length": "10485760",
+        "Upload-Checksum": f"sha256 {valid_chunk_checksum}",
+        "Content-Type": "application/octet-stream",  # Wrong - missing "offset+"
+    }
+
+    response = client_with_patch.patch(
+        f"/v1/uploads/{upload_id}",
+        headers=headers,
+        content=valid_chunk_data,
+    )
+
+    # Assertions
+    assert response.status_code == 415
+    response_data = response.json()
+    assert response_data["detail"]["error"] == "UNSUPPORTED_CONTENT_TYPE"
+    assert "message" in response_data["detail"]
+    assert response_data["detail"]["details"]["provided_content_type"] == "application/octet-stream"
+    assert (
+        response_data["detail"]["details"]["required_content_type"]
+        == "application/offset+octet-stream"
+    )
+
+
+def test_upload_chunk_invalid_checksum_format(
+    client_with_patch: TestClient,
+    mock_process_chunk_use_case: AsyncMock,
+    valid_chunk_data: bytes,
+) -> None:
+    """Test invalid checksum format returns 422.
+
+    Validates:
+        - 422 Unprocessable Entity status code
+        - Structured error response with INVALID_CHECKSUM_FORMAT code
+        - Details include provided checksum and required format
+    """
+    upload_id = uuid4()
+
+    # Make request with invalid checksum format
+    headers = {
+        "Authorization": "Bearer valid-token",
+        "Upload-Offset": "0",
+        "Upload-Length": "10485760",
+        "Upload-Checksum": "invalid",  # Wrong format
+        "Content-Type": "application/offset+octet-stream",
+    }
+
+    response = client_with_patch.patch(
+        f"/v1/uploads/{upload_id}",
+        headers=headers,
+        content=valid_chunk_data,
+    )
+
+    # Assertions
+    assert response.status_code == 422
+    response_data = response.json()
+    assert response_data["detail"]["error"] == "INVALID_CHECKSUM_FORMAT"
+    assert "message" in response_data["detail"]
+    assert response_data["detail"]["details"]["provided_checksum"] == "invalid"
+    assert "required_format" in response_data["detail"]["details"]
+
+
+def test_upload_chunk_checksum_mismatch(
+    client_with_patch: TestClient,
+    mock_process_chunk_use_case: AsyncMock,
+    valid_chunk_data: bytes,
+    valid_upload_headers: dict[str, str],
+) -> None:
+    """Test checksum mismatch error returns 460 with both checksums.
+
+    Validates:
+        - 460 Checksum Mismatch status code
+        - Structured error response with CHECKSUM_MISMATCH code
+        - Details include expected_checksum, computed_checksum, chunk_index
+    """
+    from src.domain.exceptions import ChecksumMismatchError
+
+    # Mock use case to raise ChecksumMismatchError
+    upload_id = uuid4()
+    mock_process_chunk_use_case.execute.side_effect = ChecksumMismatchError(
+        expected_checksum="abc123...",
+        computed_checksum="def456...",
+        chunk_index=42,
+    )
+
+    # Make request
+    response = client_with_patch.patch(
+        f"/v1/uploads/{upload_id}",
+        headers=valid_upload_headers,
+        content=valid_chunk_data,
+    )
+
+    # Assertions
+    assert response.status_code == 460
+    response_data = response.json()
+    assert response_data["detail"]["error"] == "CHECKSUM_MISMATCH"
+    assert "message" in response_data["detail"]
+    assert response_data["detail"]["details"]["expected_checksum"] == "abc123..."
+    assert response_data["detail"]["details"]["computed_checksum"] == "def456..."
+    assert response_data["detail"]["details"]["chunk_index"] == 42
+    assert "suggestion" in response_data["detail"]["details"]
+
+
+def test_upload_chunk_infrastructure_error(
+    client_with_patch: TestClient,
+    mock_process_chunk_use_case: AsyncMock,
+    valid_chunk_data: bytes,
+    valid_upload_headers: dict[str, str],
+) -> None:
+    """Test infrastructure error returns 503 with retry guidance.
+
+    Validates:
+        - 503 Service Unavailable status code
+        - Structured error response with INFRASTRUCTURE_ERROR code
+        - Details include retry_guidance
+    """
+    from src.domain.exceptions import InfrastructureError
+
+    # Mock use case to raise InfrastructureError
+    upload_id = uuid4()
+    mock_process_chunk_use_case.execute.side_effect = InfrastructureError("Redis connection failed")
+
+    # Make request
+    response = client_with_patch.patch(
+        f"/v1/uploads/{upload_id}",
+        headers=valid_upload_headers,
+        content=valid_chunk_data,
+    )
+
+    # Assertions
+    assert response.status_code == 503
+    response_data = response.json()
+    assert response_data["detail"]["error"] == "INFRASTRUCTURE_ERROR"
+    assert "message" in response_data["detail"]
+    assert "retry_guidance" in response_data["detail"]["details"]

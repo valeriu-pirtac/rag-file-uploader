@@ -13,13 +13,14 @@ Architecture:
 
 Endpoints:
     - POST /v1/uploads: Initiate new upload session (OWNER only)
-    - PATCH /v1/uploads/{id}: Upload chunk (OWNER only) [Future Story 3.8]
+    - PATCH /v1/uploads/{id}: Upload chunk (OWNER only)
     - HEAD /v1/uploads/{id}: Query upload offset (OWNER + COLLABORATOR) [Future Story 3.9]
     - DELETE /v1/uploads/{id}: Abort upload session (OWNER only) [Future Story 3.10]
     - GET /v1/uploads: List upload sessions (OWNER + COLLABORATOR) [Future Story 7.1]
 
 Integration Points:
     - Story 3.4: Calls InitiateUploadUseCase for session creation
+    - Story 3.7: Calls ProcessChunkUseCase for chunk processing
     - Story 2.2: Uses JWT authentication (get_current_user)
     - Story 2.4: Uses RBAC authorization (require_role)
     - Story 3.1: Works with UploadSession domain entities
@@ -56,26 +57,35 @@ Examples:
     >>> print(response.json()["details"]["current_uploads"])  # 10
 """
 
+import base64
+import binascii
 from functools import lru_cache
 from typing import Annotated
+from uuid import UUID
 
 import redis.asyncio as aioredis
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
+from src.application.dto.process_chunk_request import ProcessChunkRequest
 from src.application.dto.upload_request import InitiateUploadRequest as InitiateUploadRequestDTO
 from src.application.dto.upload_response import InitiateUploadResponse as InitiateUploadResponseDTO
 from src.application.services.rate_limiter import RedisRateLimiter
 from src.application.use_cases.initiate_upload import InitiateUploadUseCase
+from src.application.use_cases.process_chunk import ProcessChunkUseCase
 from src.domain.exceptions import (
+    ChecksumMismatchError,
     FileSizeLimitExceededError,
     InfrastructureError,
+    OffsetMismatchError,
     RateLimitExceededError,
+    SessionNotFoundError,
     UnsupportedMediaTypeError,
 )
 from src.domain.protocols.rate_limiter import IRateLimiter
 from src.domain.protocols.session_store import ISessionStore
+from src.domain.services.chunk_verifier import ChunkVerifier
 from src.domain.value_objects.jwt_claims import JWTClaims
 from src.domain.value_objects.workspace_role import WorkspaceRole
 from src.infrastructure.auth.rbac_middleware import require_role
@@ -91,6 +101,7 @@ log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["uploads"])
 
+MAX_CHUNK_SIZE = 100 * 1024 * 1024  # 100 MB
 
 # Dependency Injection Providers
 
@@ -523,7 +534,7 @@ async def initiate_upload(
         )
         clear_contextvars()
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={
                 "error": "VALIDATION_ERROR",
                 "message": str(e),
@@ -535,6 +546,548 @@ async def initiate_upload(
         # Catch-all for unexpected errors
         log.error(
             "initiate_upload_unexpected_error",
+            error=str(e),
+            error_type=type(e).__name__,
+        )
+        clear_contextvars()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "INTERNAL_SERVER_ERROR",
+                "message": "An unexpected error occurred. Please retry or contact support.",
+                "details": {},
+            },
+        ) from e
+
+
+def get_process_chunk_use_case(
+    session_store: Annotated[ISessionStore, Depends(get_session_store)],
+) -> ProcessChunkUseCase:
+    """Provide ProcessChunkUseCase with injected dependencies.
+
+    Creates use case with protocol dependencies (session store, chunk verifier).
+    This enables Clean Architecture - use case depends on protocols, not
+    concrete implementations.
+
+    Args:
+        session_store: Injected session store protocol implementation
+
+    Returns:
+        ProcessChunkUseCase: Use case for processing uploaded chunks
+
+    Examples:
+        >>> # Used as FastAPI dependency
+        >>> @router.patch("/uploads/{id}")
+        >>> async def upload_chunk(
+        ...     use_case: Annotated[ProcessChunkUseCase, Depends(get_process_chunk_use_case)],
+        ... ):
+        ...     response = await use_case.execute(request)
+    """
+    return ProcessChunkUseCase(
+        session_store=session_store,
+        chunk_verifier=ChunkVerifier(),
+    )
+
+
+@router.patch(
+    "/uploads/{upload_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Upload file chunk with SHA-256 verification",
+    description=(
+        "Uploads a chunk of data at the specified offset. "
+        "Validates offset matches current session state (strict tus protocol). "
+        "Verifies SHA-256 checksum before committing chunk. "
+        "Requires OWNER role. Streams data asynchronously."
+    ),
+    responses={
+        204: {
+            "description": "Chunk uploaded and verified successfully",
+            "headers": {
+                "Upload-Offset": {
+                    "description": "New verified byte offset after this chunk",
+                    "schema": {"type": "integer"},
+                }
+            },
+        },
+        401: {
+            "description": "Authentication failed (missing/invalid/expired JWT)",
+            "content": {"application/json": {"example": {"detail": "Authentication failed"}}},
+        },
+        403: {
+            "description": "Authorization failed (OWNER role required)",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": {"detail": "Insufficient permissions - owner role required"}
+                    }
+                }
+            },
+        },
+        404: {
+            "description": "Session not found or expired (24h TTL)",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "SESSION_NOT_FOUND",
+                        "message": "Upload session 550e8400-e29b-41d4-a716-446655440000 not found or expired",
+                        "details": {
+                            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                            "suggestion": "Start a new upload session via POST /v1/uploads",
+                        },
+                    }
+                }
+            },
+        },
+        409: {
+            "description": "Offset mismatch (client out of sync with server)",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "OFFSET_MISMATCH",
+                        "message": "Upload offset mismatch: expected 5242880, received 0",
+                        "details": {
+                            "expected_offset": 5242880,
+                            "received_offset": 0,
+                            "suggestion": "Query HEAD /v1/uploads/{id} to get current offset before retrying",
+                        },
+                    }
+                }
+            },
+        },
+        415: {
+            "description": "Unsupported Content-Type (must be application/offset+octet-stream)",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "UNSUPPORTED_CONTENT_TYPE",
+                        "message": "Content-Type must be application/offset+octet-stream",
+                        "details": {
+                            "provided_content_type": "application/octet-stream",
+                            "required_content_type": "application/offset+octet-stream",
+                        },
+                    }
+                }
+            },
+        },
+        422: {
+            "description": "Validation error (missing required headers or invalid checksum format)",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "INVALID_CHECKSUM_FORMAT",
+                        "message": "Upload-Checksum header must be in format 'sha256 {base64|hex}'",
+                        "details": {
+                            "provided_checksum": "invalid",
+                            "required_format": "sha256 {base64_or_hex_encoded_hash}",
+                        },
+                    }
+                }
+            },
+        },
+        460: {
+            "description": "Checksum mismatch (chunk corrupted in transit)",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "CHECKSUM_MISMATCH",
+                        "message": "Chunk SHA-256 checksum does not match Upload-Checksum header",
+                        "details": {
+                            "expected_checksum": "abc123...",
+                            "computed_checksum": "def456...",
+                            "chunk_index": 42,
+                            "chunk_size": 5242880,
+                            "suggestion": "Retry uploading this chunk only (do not restart full upload)",
+                        },
+                    }
+                }
+            },
+        },
+        503: {
+            "description": "Service unavailable (infrastructure failure)",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "INFRASTRUCTURE_ERROR",
+                        "message": "Storage system temporarily unavailable. Please retry.",
+                        "details": {"retry_guidance": "Retry after a few seconds"},
+                    }
+                }
+            },
+        },
+    },
+)
+async def upload_chunk(
+    upload_id: UUID,
+    request: Request,
+    current_user: Annotated[JWTClaims, Depends(require_role(WorkspaceRole.OWNER))],
+    use_case: Annotated[ProcessChunkUseCase, Depends(get_process_chunk_use_case)],
+    upload_offset: Annotated[int, Header(alias="Upload-Offset")],
+    upload_length: Annotated[int, Header(alias="Upload-Length")],
+    upload_checksum: Annotated[str, Header(alias="Upload-Checksum")],
+    content_type: Annotated[str, Header(alias="Content-Type")],
+) -> Response:
+    """Upload file chunk with SHA-256 verification.
+
+    Streams chunk data asynchronously from request body, validates offset,
+    verifies SHA-256 checksum, and updates session state atomically.
+    Follows tus protocol semantics for reliable chunked uploads.
+
+    Authentication & Authorization:
+        - Requires valid JWT in Authorization header (Bearer token)
+        - Requires OWNER role (403 Forbidden for COLLABORATOR)
+        - workspace_id extracted from JWT claims
+
+    Request Headers:
+        - Upload-Offset: Client-provided byte offset (must match session offset)
+        - Upload-Length: Total file size in bytes (for validation)
+        - Upload-Checksum: Format "sha256 {base64|hex}" - SHA-256 of chunk data
+        - Content-Type: Must be "application/offset+octet-stream"
+
+    Request Body:
+        - Raw binary chunk data (typically 5MB, varies by client)
+        - Streamed asynchronously to avoid memory spikes
+
+    Response Headers (Success):
+        - Upload-Offset: New verified byte offset after this chunk
+
+    Error Handling:
+        - 401: Authentication failed (missing/invalid/expired JWT)
+        - 403: Authorization failed (COLLABORATOR role)
+        - 404: Session not found or expired (24h TTL)
+        - 409: Offset mismatch (client out of sync)
+        - 415: Wrong Content-Type (must be application/offset+octet-stream)
+        - 422: Invalid checksum format
+        - 460: Checksum mismatch (corrupt chunk)
+        - 503: Infrastructure failure (Redis connection error)
+
+    tus Protocol Compliance:
+        - Offset validation enforces sequential uploads (no gaps, no overlaps)
+        - 409 response includes expected offset for client correction
+        - Upload-Offset response header enables client to verify server state
+        - 460 response includes both checksums for debugging
+
+    Args:
+        upload_id: Upload session UUID from path parameter
+        request: FastAPI Request object for streaming body
+        current_user: JWT claims from authentication (contains workspace_id)
+        use_case: Injected ProcessChunkUseCase with dependencies
+        upload_offset: Client-provided byte offset from header
+        upload_length: Total file size from header
+        upload_checksum: SHA-256 checksum from header (format: "sha256 {hash}")
+        content_type: Content-Type header value
+
+    Returns:
+        Response: 204 No Content with Upload-Offset header
+
+    Raises:
+        HTTPException: 401/403/404/409/415/422/460/503 with structured error details
+
+    Performance:
+        - Async streaming prevents blocking I/O
+        - No full chunk buffering in memory
+        - Processing time: <100ms per 5MB chunk (NFR-P3)
+
+    Examples:
+        >>> # Success case
+        >>> PATCH /v1/uploads/550e8400-e29b-41d4-a716-446655440000
+        >>> Authorization: Bearer <token>
+        >>> Upload-Offset: 0
+        >>> Upload-Length: 10485760
+        >>> Upload-Checksum: sha256 YWJjMTIz...
+        >>> Content-Type: application/offset+octet-stream
+        >>> <binary chunk data>
+        >>>
+        >>> # Response 204 No Content
+        >>> Upload-Offset: 5242880
+        >>>
+        >>> # Offset mismatch (client resends chunk 0, server expects chunk 1)
+        >>> PATCH /v1/uploads/550e8400-e29b-41d4-a716-446655440000
+        >>> Upload-Offset: 0  # Wrong - should be 5242880
+        >>> # Response 409 Conflict
+        >>> {
+        ...     "error": "OFFSET_MISMATCH",
+        ...     "message": "Upload offset mismatch: expected 5242880, received 0",
+        ...     "details": {
+        ...         "expected_offset": 5242880,
+        ...         "received_offset": 0
+        ...     }
+        ... }
+    """
+    # Bind user context for structured logging
+    bind_contextvars(
+        user_id=str(current_user.user_id),
+        workspace_id=str(current_user.workspace_id),
+        session_id=str(upload_id),
+        chunk_offset=upload_offset,
+    )
+
+    log.info(
+        "upload_chunk_request",
+        session_id=str(upload_id),
+        offset=upload_offset,
+        content_length=upload_length,
+    )
+
+    # STEP 1: Validate upload_length is positive (basic tus protocol compliance)
+    if upload_length <= 0:
+        log.warning(
+            "upload_chunk_invalid_upload_length",
+            provided=upload_length,
+        )
+        clear_contextvars()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "error": "INVALID_UPLOAD_LENGTH",
+                "message": "Upload-Length must be greater than 0",
+                "details": {
+                    "provided_upload_length": upload_length,
+                },
+            },
+        )
+
+    # STEP 2: Validate Content-Type (must be application/offset+octet-stream)
+    if content_type != "application/offset+octet-stream":
+        log.warning(
+            "upload_chunk_invalid_content_type",
+            provided=content_type,
+            required="application/offset+octet-stream",
+        )
+        clear_contextvars()
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail={
+                "error": "UNSUPPORTED_CONTENT_TYPE",
+                "message": "Content-Type must be application/offset+octet-stream",
+                "details": {
+                    "provided_content_type": content_type,
+                    "required_content_type": "application/offset+octet-stream",
+                },
+            },
+        )
+
+    # STEP 2: Parse Upload-Checksum header (format: "sha256 {base64|hex}")
+    # Strip whitespace to handle headers with embedded newlines/spaces
+    upload_checksum = upload_checksum.strip()
+
+    try:
+        checksum_parts = upload_checksum.split(" ", 1)
+        if len(checksum_parts) != 2 or checksum_parts[0] != "sha256":
+            raise ValueError("Invalid checksum format - must start with 'sha256 '")
+
+        checksum_value = checksum_parts[1]
+
+        # Check if it's already hex format (64 chars, all hex digits)
+        if len(checksum_value) == 64 and all(c in "0123456789abcdefABCDEF" for c in checksum_value):
+            # Already hex - use as-is (lowercase)
+            chunk_checksum = checksum_value.lower()
+        else:
+            # Try to decode as base64
+            try:
+                checksum_bytes = base64.b64decode(checksum_value)
+                if len(checksum_bytes) != 32:  # SHA-256 is 32 bytes
+                    raise ValueError("Decoded checksum must be 32 bytes (SHA-256)")
+                chunk_checksum = checksum_bytes.hex()
+            except (ValueError, binascii.Error) as base64_error:
+                raise ValueError(
+                    f"Invalid checksum format - must be 64-char hex or base64: {base64_error}"
+                ) from base64_error
+
+    except ValueError as e:
+        log.warning(
+            "upload_chunk_invalid_checksum_format",
+            provided=upload_checksum,
+            error=str(e),
+        )
+        clear_contextvars()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "error": "INVALID_CHECKSUM_FORMAT",
+                "message": "Upload-Checksum header must be in format 'sha256 {base64|hex}'",
+                "details": {
+                    "provided_checksum": upload_checksum,
+                    "required_format": "sha256 {base64_or_hex_encoded_hash}",
+                },
+            },
+        ) from e
+
+    # STEP 4: Validate Content-Length before reading body (prevent memory exhaustion)
+    content_length = request.headers.get("Content-Length")
+    if content_length:
+        try:
+            content_length_int = int(content_length)
+            # Enforce maximum chunk size of 100MB (configurable limit)
+            if content_length_int > MAX_CHUNK_SIZE:
+                log.warning(
+                    "upload_chunk_body_too_large",
+                    content_length=content_length_int,
+                    max_allowed=MAX_CHUNK_SIZE,
+                )
+                clear_contextvars()
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail={
+                        "error": "REQUEST_BODY_TOO_LARGE",
+                        "message": f"Request body exceeds maximum chunk size of {MAX_CHUNK_SIZE} bytes",
+                        "details": {
+                            "content_length": content_length_int,
+                            "max_chunk_size": MAX_CHUNK_SIZE,
+                        },
+                    },
+                )
+        except ValueError:
+            # Invalid Content-Length header - let body reading fail naturally
+            pass
+
+    # STEP 5: Stream chunk data from request body
+    try:
+        # Stream body asynchronously - no blocking I/O
+        chunk_data = await request.body()
+    except Exception as e:
+        log.error(
+            "upload_chunk_read_body_failed",
+            error=str(e),
+        )
+        clear_contextvars()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "READ_BODY_FAILED",
+                "message": "Failed to read request body",
+                "details": {},
+            },
+        ) from e
+
+    # STEP 6: Create DTO and call use case
+    dto_request = ProcessChunkRequest(
+        workspace_id=current_user.workspace_id,
+        session_id=upload_id,
+        chunk_data=chunk_data,
+        chunk_offset=upload_offset,
+        chunk_checksum=chunk_checksum,
+    )
+
+    try:
+        dto_response = await use_case.execute(dto_request)
+
+        log.info(
+            "upload_chunk_success",
+            session_id=str(upload_id),
+            new_offset=dto_response.new_offset,
+            chunk_size=len(chunk_data),
+        )
+
+        clear_contextvars()
+
+        # Return 204 No Content with Upload-Offset header
+        return Response(
+            status_code=status.HTTP_204_NO_CONTENT,
+            headers={"Upload-Offset": str(dto_response.new_offset)},
+        )
+
+    except SessionNotFoundError as e:
+        # 404 Session Not Found - expired or never existed
+        log.warning(
+            "upload_chunk_session_not_found",
+            session_id=str(upload_id),
+        )
+        clear_contextvars()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "SESSION_NOT_FOUND",
+                "message": str(e),
+                "details": {
+                    "session_id": str(upload_id),
+                    "suggestion": "Start a new upload session via POST /v1/uploads",
+                },
+            },
+        ) from e
+
+    except OffsetMismatchError as e:
+        # 409 Conflict - client offset doesn't match server offset
+        log.warning(
+            "upload_chunk_offset_mismatch",
+            expected_offset=e.expected_offset,
+            received_offset=e.received_offset,
+        )
+        clear_contextvars()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "OFFSET_MISMATCH",
+                "message": str(e),
+                "details": {
+                    "expected_offset": e.expected_offset,
+                    "received_offset": e.received_offset,
+                    "suggestion": "Query HEAD /v1/uploads/{id} to get current offset before retrying",
+                },
+            },
+        ) from e
+
+    except ChecksumMismatchError as e:
+        # 460 Checksum Mismatch - chunk corrupted in transit
+        log.warning(
+            "upload_chunk_checksum_mismatch",
+            expected_checksum=e.expected_checksum,
+            computed_checksum=e.computed_checksum,
+            chunk_index=e.chunk_index,
+        )
+        clear_contextvars()
+        raise HTTPException(
+            status_code=460,  # Custom status code per tus protocol
+            detail={
+                "error": "CHECKSUM_MISMATCH",
+                "message": str(e),
+                "details": {
+                    "expected_checksum": e.expected_checksum,
+                    "computed_checksum": e.computed_checksum,
+                    "chunk_index": e.chunk_index,
+                    "chunk_size": len(chunk_data),
+                    "suggestion": "Retry uploading this chunk only (do not restart full upload)",
+                },
+            },
+        ) from e
+
+    except InfrastructureError as e:
+        # 503 Service Unavailable - Redis/storage failure
+        log.error(
+            "upload_chunk_infrastructure_error",
+            error=str(e),
+        )
+        clear_contextvars()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "INFRASTRUCTURE_ERROR",
+                "message": str(e),
+                "details": {
+                    "retry_guidance": "Retry after a few seconds",
+                },
+            },
+        ) from e
+
+    except ValueError as e:
+        # 422 Unprocessable Entity - validation error from DTO
+        log.warning(
+            "upload_chunk_validation_error",
+            error=str(e),
+        )
+        clear_contextvars()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "error": "VALIDATION_ERROR",
+                "message": str(e),
+                "details": {},
+            },
+        ) from e
+
+    except Exception as e:
+        # Catch-all for unexpected errors
+        log.error(
+            "upload_chunk_unexpected_error",
             error=str(e),
             error_type=type(e).__name__,
         )
