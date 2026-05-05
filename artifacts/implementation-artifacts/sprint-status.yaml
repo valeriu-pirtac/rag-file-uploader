@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-04-30T11:34:09Z
-last_updated: 2026-05-04T18:54:48Z
+last_updated: 2026-05-05T07:16:12Z
 project: rag-file-uploader
 project_key: NOKEY
 tracking_system: file-system
@@ -61,8 +61,8 @@ development_status:
   epic-2-retrospective: optional
 
   # Epic 3: Chunked Upload Session Lifecycle
-  epic-3: backlog
-  3-1-create-upload-session-domain-entities-and-value-objects: backlog
+  epic-3: in-progress
+  3-1-create-upload-session-domain-entities-and-value-objects: done
   3-2-implement-redis-session-store-infrastructure: backlog
   3-3-implement-per-workspace-rate-limiting: backlog
   3-4-create-initiate-upload-session-use-case-post-v1-uploads: backlog
