@@ -3,6 +3,8 @@
 This module defines custom exceptions used across the domain layer.
 """
 
+from uuid import UUID
+
 
 class DomainException(Exception):
     """Base exception for all domain-layer errors."""
@@ -138,6 +140,121 @@ class ChecksumMismatchError(DomainException):
             message += f" (chunk {chunk_index})"
         if chunk_size > 0:
             message += f" ({chunk_size} bytes)"
+
+        super().__init__(message)
+
+
+class OffsetMismatchError(DomainException):
+    """Raised when client upload offset doesn't match session offset.
+
+    This exception indicates a synchronization issue between client and server
+    state. This can occur due to:
+
+    - Client resuming without querying HEAD /v1/uploads/{id} first
+    - Client retrying a failed chunk without updating offset
+    - Network issues causing client state corruption
+    - Race condition with multiple concurrent clients (should never happen)
+
+    The client MUST query HEAD /v1/uploads/{id} to get the current offset
+    before retrying or resuming uploads.
+
+    Attributes:
+        expected_offset: The current session offset (server state)
+        received_offset: The offset provided by client
+        session_id: Upload session UUID for debugging
+    """
+
+    def __init__(
+        self,
+        expected_offset: int,
+        received_offset: int,
+        session_id: UUID,
+    ) -> None:
+        """Initialize offset mismatch error.
+
+        Args:
+            expected_offset: The current session offset (server state)
+            received_offset: The offset provided by client
+            session_id: Upload session UUID for debugging
+
+        Raises:
+            ValueError: If offsets are negative
+
+        Example:
+            >>> from uuid import uuid4
+            >>> error = OffsetMismatchError(
+            ...     expected_offset=5242880,
+            ...     received_offset=0,
+            ...     session_id=uuid4()
+            ... )
+            >>> str(error)
+            'Upload offset mismatch: expected 5242880, received 0 (session xxxxxxxx-xxxx-...)'
+        """
+        if expected_offset < 0:
+            raise ValueError("expected_offset cannot be negative")
+        if received_offset < 0:
+            raise ValueError("received_offset cannot be negative")
+
+        self.expected_offset = expected_offset
+        self.received_offset = received_offset
+        self.session_id = session_id
+
+        message = (
+            f"Upload offset mismatch: "
+            f"expected {expected_offset}, received {received_offset} "
+            f"(session {session_id})"
+        )
+
+        super().__init__(message)
+
+
+class InvalidSessionStateError(DomainException):
+    """Raised when attempting an operation on a session in invalid state.
+
+    This exception indicates a session state transition or operation that is
+    not allowed given the current session status. Common scenarios:
+
+    - Uploading chunks to a COMPLETE session (upload already finished)
+    - Uploading chunks to a FAILED session (upload failed, cannot continue)
+    - Uploading chunks to an ABORTED session (upload cancelled by client)
+    - Any operation requiring specific status that doesn't match current state
+
+    Terminal states (COMPLETE, FAILED, ABORTED) cannot accept new chunks.
+
+    Attributes:
+        session_id: Upload session UUID for debugging
+        current_state: The actual session status that caused rejection
+        operation: The operation that was attempted (e.g., "process_chunk")
+    """
+
+    def __init__(
+        self,
+        session_id: UUID,
+        current_state: str,
+        operation: str,
+    ) -> None:
+        """Initialize invalid session state error.
+
+        Args:
+            session_id: Upload session UUID for debugging
+            current_state: The actual session status that caused rejection
+            operation: The operation that was attempted
+
+        Example:
+            >>> from uuid import uuid4
+            >>> error = InvalidSessionStateError(
+            ...     session_id=uuid4(),
+            ...     current_state="COMPLETE",
+            ...     operation="process_chunk"
+            ... )
+            >>> str(error)
+            'Cannot process_chunk for session ... in COMPLETE state'
+        """
+        self.session_id = session_id
+        self.current_state = current_state
+        self.operation = operation
+
+        message = f"Cannot {operation} for session {session_id} in {current_state} state"
 
         super().__init__(message)
 
