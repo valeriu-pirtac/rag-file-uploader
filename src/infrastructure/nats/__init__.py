@@ -7,6 +7,7 @@ Implements IEventPublisher protocol using nats-py for:
 """
 
 from src.infrastructure.nats.event_publisher import NATSEventPublisher
+from src.infrastructure.nats.event_publisher_with_retry import EventPublisherWithRetry
 
 
-__all__ = ["NATSEventPublisher"]
+__all__ = ["NATSEventPublisher", "EventPublisherWithRetry"]

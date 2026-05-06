@@ -78,7 +78,7 @@ development_status:
   # Epic 4: Upload Resumability & Session Persistence
   epic-4: done  # MVP-complete: Core session persistence implemented; resume and batch features deferred
   4-1-implement-session-ttl-and-expiry-handling: done
-  4-2-implement-resume-from-offset-logic: optional  # Deferred - can be added post-MVP based on user needs
+  4-2-implement-resume-from-offset-logic: done
   4-3-add-multi-file-batch-upload-support: optional  # Deferred - not critical for MVP; will revisit during later implementation phase
   epic-4-retrospective: optional
 
@@ -89,7 +89,7 @@ development_status:
   5-3-integrate-clamav-virus-scanner: optional  # Deferred - not critical for current MVP stage; will revisit during later implementation phase
   5-4-create-event-domain-entities-and-schema: done
   5-5-implement-nats-jetstream-publisher: done
-  5-6-implement-event-retry-logic-with-dead-letter-queue: backlog
+  5-6-implement-event-retry-logic-with-dead-letter-queue: done
   5-7-implement-webhook-callback-alternative: backlog
   5-8-orchestrate-complete-upload-use-case: backlog
   epic-5-retrospective: optional
