@@ -5,3 +5,8 @@ Implements IEventPublisher protocol using nats-py for:
 - At-least-once delivery with retry logic
 - Durable subject configuration
 """
+
+from src.infrastructure.nats.event_publisher import NATSEventPublisher
+
+
+__all__ = ["NATSEventPublisher"]

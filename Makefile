@@ -1,4 +1,4 @@
-.PHONY: help setup install clean test test-unit test-integration test-e2e test-coverage lint format type-check check dev docs docs-serve
+.PHONY: help setup install install-dev clean clean-cache test test-all test-unit test-integration test-e2e test-coverage test-coverage-all test-watch lint format format-check type-check check dev dev-debug shell docs docs-serve info deps-outdated lock ci ci-coverage
 
 # Variables
 PYTHON := python3
@@ -19,9 +19,12 @@ NC := \033[0m # No Color
 help: ## Show this help message
 	@echo "$(BLUE)RAG File Uploader - Available Make Targets$(NC)"
 	@echo ""
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-20s$(NC) %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-20s$(NC) %s\n", $$1, $$2}'
 	@echo ""
-	@echo "$(YELLOW)Note: All commands run within flox environment$(NC)"
+	@echo "$(YELLOW)Notes:$(NC)"
+	@echo "  • All commands run within flox environment"
+	@echo "  • Default 'make test' excludes integration tests (no external services needed)"
+	@echo "  • Use 'make test-all' or 'make test-integration' to run tests requiring NATS, MinIO, etc."
 
 ##@ Setup & Installation
 
@@ -33,8 +36,9 @@ setup: ## Initialize project: create venv, install dependencies
 	@echo ""
 	@echo "$(YELLOW)Next steps:$(NC)"
 	@echo "  1. Activate flox environment: eval \"\$$(flox activate)\""
-	@echo "  2. Run tests: make test"
-	@echo "  3. Start dev server: make dev"
+	@echo "  2. Run tests (without integration): make test"
+	@echo "  3. Run all tests (with integration): make test-all"
+	@echo "  4. Start dev server: make dev"
 
 install: ## Install/sync dependencies (after pyproject.toml changes)
 	@echo "$(GREEN)→ Syncing dependencies...$(NC)"
@@ -67,29 +71,37 @@ check: format-check lint type-check ## Run all code quality checks (format, lint
 
 ##@ Testing
 
-test: ## Run all tests
-	@echo "$(GREEN)→ Running all tests...$(NC)"
+test: ## Run all tests (excluding integration tests requiring external services)
+	@echo "$(GREEN)→ Running tests (excluding integration)...$(NC)"
+	$(FLOX) $(UV) run pytest $(TEST_DIR) -v -m "not integration"
+
+test-all: ## Run all tests including integration tests
+	@echo "$(GREEN)→ Running all tests (including integration)...$(NC)"
 	$(FLOX) $(UV) run pytest $(TEST_DIR) -v
 
 test-unit: ## Run unit tests only
 	@echo "$(GREEN)→ Running unit tests...$(NC)"
 	$(FLOX) $(UV) run pytest $(TEST_DIR)/unit -v
 
-test-integration: ## Run integration tests only
+test-integration: ## Run integration tests only (requires external services like NATS)
 	@echo "$(GREEN)→ Running integration tests...$(NC)"
-	$(FLOX) $(UV) run pytest $(TEST_DIR)/integration -v
+	$(FLOX) $(UV) run pytest $(TEST_DIR) -v -m "integration"
 
-test-e2e: ## Run end-to-end tests only
+test-e2e: ## Run end-to-end tests
 	@echo "$(GREEN)→ Running E2E tests...$(NC)"
 	$(FLOX) $(UV) run pytest $(TEST_DIR)/e2e -v
 
-test-coverage: ## Run tests with coverage report
+test-coverage: ## Run tests with coverage report (excludes integration tests)
 	@echo "$(GREEN)→ Running tests with coverage...$(NC)"
+	$(FLOX) $(UV) run pytest $(TEST_DIR) -m "not integration" --cov=$(SRC_DIR) --cov-config=pytest.ini --cov-report=html --cov-report=term-missing
+
+test-coverage-all: ## Run all tests including integration with coverage report
+	@echo "$(GREEN)→ Running all tests with coverage...$(NC)"
 	$(FLOX) $(UV) run pytest $(TEST_DIR) --cov=$(SRC_DIR) --cov-config=pytest.ini --cov-report=html --cov-report=term-missing
 
-test-watch: ## Run tests in watch mode (requires pytest-watch)
+test-watch: ## Run tests in watch mode (excludes integration tests)
 	@echo "$(GREEN)→ Running tests in watch mode...$(NC)"
-	$(FLOX) $(UV) run ptw $(TEST_DIR) -- -v
+	$(FLOX) $(UV) run ptw $(TEST_DIR) -- -v -m "not integration"
 
 ##@ Development
 
