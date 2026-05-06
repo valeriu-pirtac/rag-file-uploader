@@ -5,9 +5,12 @@ chunk upload processing flow including session retrieval, offset validation,
 SHA-256 verification, chunk tracking, and session state updates.
 """
 
+import redis.asyncio as aioredis
+
 from src.application.dto.process_chunk_request import ProcessChunkRequest
 from src.application.dto.process_chunk_response import ProcessChunkResponse
 from src.domain.exceptions import (
+    InfrastructureError,
     InvalidSessionStateError,
     OffsetMismatchError,
     SessionNotFoundError,
@@ -79,6 +82,7 @@ class ProcessChunkUseCase:
         self,
         session_store: ISessionStore,
         chunk_verifier: ChunkVerifier,
+        redis_client: aioredis.Redis,
     ) -> None:
         """Initialize the use case with protocol dependencies.
 
@@ -87,9 +91,12 @@ class ProcessChunkUseCase:
                 and updating upload session state in durable storage
             chunk_verifier: Chunk verifier domain service for SHA-256 checksum
                 validation of uploaded chunks
+            redis_client: Redis client for storing chunk data with 24-hour TTL
         """
         self._session_store = session_store
         self._chunk_verifier = chunk_verifier
+        self._redis = redis_client
+        self._chunk_ttl_seconds = 86400  # 24 hours (matches session TTL)
 
     async def execute(self, request: ProcessChunkRequest) -> ProcessChunkResponse:
         """Execute the process chunk use case.
@@ -216,6 +223,17 @@ class ProcessChunkUseCase:
             chunk_index=chunk_index,
         )
         # Note: verify_chunk raises ChecksumMismatchError on mismatch
+
+        # STEP 6.5: Store chunk bytes in Redis for later assembly (Story 5.8)
+        # Key pattern: chunk:workspace_{workspace_id}:session_{session_id}:index_{index}
+        # TTL: 24 hours (matches session TTL)
+        chunk_key = f"chunk:workspace_{request.workspace_id}:session_{request.session_id}:index_{chunk_index}"
+        try:
+            await self._redis.set(chunk_key, request.chunk_data, ex=self._chunk_ttl_seconds)
+        except Exception as e:
+            raise InfrastructureError(
+                f"Failed to store chunk {chunk_index} in Redis: {str(e)}"
+            ) from e
 
         # STEP 7: Calculate new offset
         new_offset = session.offset + chunk_size

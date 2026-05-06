@@ -44,14 +44,24 @@ def mock_chunk_verifier() -> Mock:
 
 
 @pytest.fixture
+def mock_redis_client() -> AsyncMock:
+    """Create mock Redis client."""
+    redis = AsyncMock()
+    redis.set = AsyncMock()
+    return redis
+
+
+@pytest.fixture
 def use_case(
     mock_session_store: AsyncMock,
     mock_chunk_verifier: Mock,
+    mock_redis_client: AsyncMock,
 ) -> ProcessChunkUseCase:
     """Create ProcessChunkUseCase with mocked dependencies."""
     return ProcessChunkUseCase(
         session_store=mock_session_store,
         chunk_verifier=mock_chunk_verifier,
+        redis_client=mock_redis_client,
     )
 
 

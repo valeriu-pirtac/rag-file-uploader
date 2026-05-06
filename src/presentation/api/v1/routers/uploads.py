@@ -568,15 +568,17 @@ async def initiate_upload(
 
 def get_process_chunk_use_case(
     session_store: Annotated[ISessionStore, Depends(get_session_store)],
+    redis_client: Annotated[aioredis.Redis, Depends(get_redis_client)],
 ) -> ProcessChunkUseCase:
     """Provide ProcessChunkUseCase with injected dependencies.
 
-    Creates use case with protocol dependencies (session store, chunk verifier).
+    Creates use case with protocol dependencies (session store, chunk verifier, redis client).
     This enables Clean Architecture - use case depends on protocols, not
     concrete implementations.
 
     Args:
         session_store: Injected session store protocol implementation
+        redis_client: Injected Redis client for chunk storage
 
     Returns:
         ProcessChunkUseCase: Use case for processing uploaded chunks
@@ -592,6 +594,7 @@ def get_process_chunk_use_case(
     return ProcessChunkUseCase(
         session_store=session_store,
         chunk_verifier=ChunkVerifier(),
+        redis_client=redis_client,
     )
 
 
