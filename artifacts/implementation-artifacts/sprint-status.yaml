@@ -90,7 +90,7 @@ development_status:
   5-4-create-event-domain-entities-and-schema: done
   5-5-implement-nats-jetstream-publisher: done
   5-6-implement-event-retry-logic-with-dead-letter-queue: done
-  5-7-implement-webhook-callback-alternative: backlog
+  5-7-implement-webhook-callback-alternative: done
   5-8-orchestrate-complete-upload-use-case: backlog
   epic-5-retrospective: optional
 

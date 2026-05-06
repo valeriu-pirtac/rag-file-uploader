@@ -187,8 +187,8 @@ async def test_event_consumed_by_downstream_subscriber(
         payload = await asyncio.wait_for(received_message, timeout=5.0)
 
         # Verify payload structure
-        assert payload["event_type"] == "FILE_LOAD_COMPLETED"
-        assert payload["event_version"] == "1.0"
+        assert payload["eventType"] == "FILE_LOAD_COMPLETED"
+        assert payload["eventVersion"] == "1.0"
         assert payload["payload"]["file_id"] == str(sample_event.file_id)
         assert payload["payload"]["workspace_id"] == str(sample_event.workspace_id)
     except TimeoutError:

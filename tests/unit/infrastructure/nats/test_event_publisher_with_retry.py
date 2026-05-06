@@ -365,8 +365,8 @@ class TestPublishRetryFailureScenarios:
 
         # Verify event_payload contains full event (with nested payload structure)
         event_payload = dlq_entry["event_payload"]
-        assert event_payload["event_version"] == "1.0"
-        assert event_payload["event_type"] == "FILE_LOAD_COMPLETED"
+        assert event_payload["eventVersion"] == "1.0"
+        assert event_payload["eventType"] == "FILE_LOAD_COMPLETED"
         assert "payload" in event_payload
 
         # Verify nested payload fields

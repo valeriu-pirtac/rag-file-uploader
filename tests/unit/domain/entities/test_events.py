@@ -467,9 +467,9 @@ class TestFileLoadCompletedEventSerialization:
 
         result = event.to_dict()
 
-        # Verify envelope fields
-        assert result["event_version"] == "1.0"
-        assert result["event_type"] == "FILE_LOAD_COMPLETED"
+        # Verify envelope fields (camelCase per AC #2)
+        assert result["eventVersion"] == "1.0"
+        assert result["eventType"] == "FILE_LOAD_COMPLETED"
         assert result["timestamp"] == timestamp.isoformat()
 
         # Verify payload structure
@@ -569,8 +569,8 @@ class TestFileLoadCompletedEventSerialization:
         # Verify it's valid JSON by parsing it
         parsed = json.loads(json_str)
         assert isinstance(parsed, dict)
-        assert parsed["event_version"] == "1.0"
-        assert parsed["event_type"] == "FILE_LOAD_COMPLETED"
+        assert parsed["eventVersion"] == "1.0"
+        assert parsed["eventType"] == "FILE_LOAD_COMPLETED"
         assert "timestamp" in parsed
         assert "payload" in parsed
 
@@ -595,9 +595,9 @@ class TestFileLoadCompletedEventSerialization:
         json_str = event.to_json()
         parsed = json.loads(json_str)
 
-        # Verify envelope fields
-        assert "event_version" in parsed
-        assert "event_type" in parsed
+        # Verify envelope fields (camelCase per AC #2)
+        assert "eventVersion" in parsed
+        assert "eventType" in parsed
         assert "timestamp" in parsed
 
         # Verify payload fields
