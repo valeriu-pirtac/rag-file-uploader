@@ -68,6 +68,23 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # MinIO initialization - Configure lifecycle policy for incomplete upload cleanup
+  minio-init:
+    image: minio/mc:RELEASE.2025-01-05T07-35-36Z
+    container_name: rag-uploader-minio-init
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-admin}
+    volumes:
+      - ./scripts/minio-init.sh:/minio-init.sh:ro
+    entrypoint: ["/bin/sh", "/minio-init.sh"]
+    networks:
+      - rag-uploader-network
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"  # Run once on startup
+
   # NATS JetStream - Event bus for FILE_LOAD_COMPLETED events
   nats:
     image: nats:2.10-alpine

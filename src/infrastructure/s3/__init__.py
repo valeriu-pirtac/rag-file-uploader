@@ -5,3 +5,8 @@ Implements IStorageClient protocol using aioboto3 for:
 - Workspace-scoped path isolation
 - Server-side encryption (AES-256)
 """
+
+from src.infrastructure.s3.storage_client import S3StorageClient
+
+
+__all__ = ["S3StorageClient"]

@@ -15,6 +15,13 @@ from src.domain.protocols.deduplication_store import (
 )
 from src.domain.protocols.rate_limiter import IRateLimiter
 from src.domain.protocols.session_store import ISessionStore
+from src.domain.protocols.storage_client import IStorageClient
 
 
-__all__ = ["ISessionStore", "IRateLimiter", "IDeduplicationStore", "FileMetadata"]
+__all__ = [
+    "ISessionStore",
+    "IRateLimiter",
+    "IDeduplicationStore",
+    "FileMetadata",
+    "IStorageClient",
+]
