@@ -139,6 +139,19 @@ class AppSettings(BaseSettings):
         default=3, ge=0, description="Maximum NATS reconnection attempts (0 = infinite)"
     )
 
+    # Event Retry and Dead Letter Queue Configuration
+    event_max_retry_attempts: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description="Maximum retry attempts for event publishing (default: 5, max: 100)",
+    )
+    event_dlq_ttl_seconds: int = Field(
+        default=604800,  # 7 days
+        ge=1,
+        description="Dead letter queue entry TTL in seconds (default: 604800 = 7 days)",
+    )
+
     # ClamAV Configuration
     clamav_host: str = Field(..., min_length=1, description="ClamAV clamd service host (REQUIRED)")
     clamav_port: int = Field(default=3310, ge=1, le=65535, description="ClamAV clamd service port")
