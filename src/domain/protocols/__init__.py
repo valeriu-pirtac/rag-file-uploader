@@ -13,6 +13,7 @@ from src.domain.protocols.deduplication_store import (
     FileMetadata,
     IDeduplicationStore,
 )
+from src.domain.protocols.event_publisher import IEventPublisher
 from src.domain.protocols.rate_limiter import IRateLimiter
 from src.domain.protocols.session_store import ISessionStore
 from src.domain.protocols.storage_client import IStorageClient
@@ -24,4 +25,5 @@ __all__ = [
     "IDeduplicationStore",
     "FileMetadata",
     "IStorageClient",
+    "IEventPublisher",
 ]
