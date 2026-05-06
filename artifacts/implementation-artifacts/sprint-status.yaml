@@ -88,7 +88,7 @@ development_status:
   5-2-implement-minio-s3-file-assembly-with-storage-isolation: done
   5-3-integrate-clamav-virus-scanner: optional  # Deferred - not critical for current MVP stage; will revisit during later implementation phase
   5-4-create-event-domain-entities-and-schema: done
-  5-5-implement-nats-jetstream-publisher: backlog
+  5-5-implement-nats-jetstream-publisher: done
   5-6-implement-event-retry-logic-with-dead-letter-queue: backlog
   5-7-implement-webhook-callback-alternative: backlog
   5-8-orchestrate-complete-upload-use-case: backlog

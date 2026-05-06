@@ -121,10 +121,22 @@ class AppSettings(BaseSettings):
         default=None, description="NATS server URL (required if event_publish_mode == 'nats')"
     )
     nats_subject: str = Field(
-        default="file.load.completed", description="NATS subject for file load events"
+        default="upload.file.load.completed", description="NATS subject for file load events"
     )
     event_publish_mode: Literal["nats", "webhook"] = Field(
         default="nats", description="Event publish mode"
+    )
+    nats_stream_name: str = Field(
+        default="UPLOAD_EVENTS", description="JetStream stream name for upload events"
+    )
+    nats_durable_name: str = Field(
+        default="upload-events-consumer", description="Durable consumer name for upload events"
+    )
+    nats_connection_timeout: int = Field(
+        default=5, gt=0, description="NATS connection timeout in seconds"
+    )
+    nats_max_reconnect_attempts: int = Field(
+        default=3, ge=0, description="Maximum NATS reconnection attempts (0 = infinite)"
     )
 
     # ClamAV Configuration
