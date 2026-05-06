@@ -345,3 +345,91 @@ class UnsupportedMediaTypeError(DomainException):
             f"MIME type '{provided_mime_type}' is not supported. "
             f"Allowed types: {', '.join(allowed_mime_types)}"
         )
+
+
+class WorkspaceMismatchError(DomainException):
+    """Raised when a resource belongs to a different workspace.
+
+    This exception indicates a security violation - a user is attempting
+    to access or modify a resource (upload session, file, etc.) that
+    belongs to a different workspace than their active workspace.
+
+    This should NEVER happen if JWT validation and RBAC are working
+    correctly. If this exception is raised, it indicates either:
+    1. A bug in JWT validation logic
+    2. A client attempting to manipulate session IDs
+    3. A race condition in workspace switching
+
+    When this exception is raised:
+    - Log as ERROR (security violation)
+    - Return 403 Forbidden to client
+    - Include minimal details (don't leak workspace info)
+    - Alert security monitoring system
+
+    Attributes:
+        resource_id: The ID of the resource being accessed (e.g., session_id)
+        resource_type: The type of resource (e.g., "upload_session")
+        expected_workspace_id: The workspace ID from JWT claims
+        actual_workspace_id: The workspace ID the resource belongs to
+
+    Examples:
+        >>> # User in workspace A tries to abort session from workspace B
+        >>> from uuid import uuid4
+        >>> error = WorkspaceMismatchError(
+        ...     resource_id=uuid4(),
+        ...     resource_type="upload_session",
+        ...     expected_workspace_id=uuid4(),
+        ...     actual_workspace_id=uuid4()
+        ... )
+        >>> str(error)
+        'Resource upload_session ... belongs to different workspace than active workspace'
+    """
+
+    def __init__(
+        self,
+        resource_id: UUID,
+        resource_type: str,
+        expected_workspace_id: UUID,
+        actual_workspace_id: UUID,
+    ) -> None:
+        """Initialize workspace mismatch error.
+
+        Args:
+            resource_id: The ID of the resource being accessed
+            resource_type: The type of resource (e.g., "upload_session", "file")
+            expected_workspace_id: The workspace ID from JWT claims
+            actual_workspace_id: The workspace ID the resource belongs to
+
+        Raises:
+            ValueError: If any required parameter is None or empty
+
+        Example:
+            >>> from uuid import uuid4
+            >>> error = WorkspaceMismatchError(
+            ...     resource_id=uuid4(),
+            ...     resource_type="upload_session",
+            ...     expected_workspace_id=uuid4(),
+            ...     actual_workspace_id=uuid4()
+            ... )
+        """
+        # Validate parameters to ensure error message quality
+        if resource_id is None:
+            raise ValueError("resource_id must not be None")
+        if not resource_type:
+            raise ValueError("resource_type must not be empty")
+        if expected_workspace_id is None:
+            raise ValueError("expected_workspace_id must not be None")
+        if actual_workspace_id is None:
+            raise ValueError("actual_workspace_id must not be None")
+
+        self.resource_id = resource_id
+        self.resource_type = resource_type
+        self.expected_workspace_id = expected_workspace_id
+        self.actual_workspace_id = actual_workspace_id
+
+        message = (
+            f"Resource {resource_type} {resource_id} belongs to different workspace "
+            f"than active workspace"
+        )
+
+        super().__init__(message)

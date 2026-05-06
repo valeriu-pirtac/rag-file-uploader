@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-04-30T11:34:09Z
-last_updated: 2026-05-06T00:00:00Z
+last_updated: 2026-05-06T11:36:00Z
 project: rag-file-uploader
 project_key: NOKEY
 tracking_system: file-system
@@ -71,7 +71,7 @@ development_status:
   3-7-create-process-chunk-use-case-patch-v1-uploads-id: done
   3-8-implement-patch-v1-uploads-id-api-endpoint: done
   3-9-implement-query-upload-offset-head-v1-uploads-id: done
-  3-10-implement-abort-upload-session-delete-v1-uploads-id: backlog
+  3-10-implement-abort-upload-session-delete-v1-uploads-id: done
   epic-3-retrospective: optional
 
   # Epic 4: Upload Resumability & Session Persistence
