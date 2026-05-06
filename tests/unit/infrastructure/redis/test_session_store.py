@@ -100,8 +100,10 @@ class TestCreateSession:
         # Check pipeline was called
         mock_redis.pipeline.assert_called_once()
         pipeline = mock_redis.pipeline.return_value
-        pipeline.hset.assert_called_once()
-        call_args = pipeline.hset.call_args
+        # Now expects 2 hset calls: one for session, one for expiry metadata (Story 4.1)
+        assert pipeline.hset.call_count == 2
+        # First call is for session data
+        call_args = pipeline.hset.call_args_list[0]
         assert call_args[0][0] == expected_key
 
     @pytest.mark.asyncio
@@ -115,7 +117,9 @@ class TestCreateSession:
         await session_store.create_session(sample_session)
 
         pipeline = mock_redis.pipeline.return_value
-        call_args = pipeline.hset.call_args
+        # Story 4.1: Now creates two entries (session + expiry metadata)
+        # First call is session data
+        call_args = pipeline.hset.call_args_list[0]
         data = call_args[1]["mapping"]
 
         assert data["session_id"] == str(sample_session.session_id)
@@ -145,7 +149,8 @@ class TestCreateSession:
         await session_store.create_session(sample_session)
 
         pipeline = mock_redis.pipeline.return_value
-        call_args = pipeline.hset.call_args
+        # Story 4.1: First call is session data
+        call_args = pipeline.hset.call_args_list[0]
         data = call_args[1]["mapping"]
         chunk_manifest_json = data["chunk_manifest"]
 
@@ -168,7 +173,10 @@ class TestCreateSession:
         )
 
         pipeline = mock_redis.pipeline.return_value
-        pipeline.expire.assert_called_once_with(expected_key, 86400)
+        # Story 4.1: Now expects 2 expire calls (session 24h, metadata 7d)
+        assert pipeline.expire.call_count == 2
+        # First expire call is for session (24 hours)
+        pipeline.expire.call_args_list[0] = (expected_key, 86400)
         pipeline.execute.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -193,18 +201,20 @@ class TestCreateSession:
         mock_redis: AsyncMock,
         sample_session: UploadSession,
     ) -> None:
-        """Test create_session handles empty chunk_manifest correctly."""
+        """Test empty chunk_manifest [] is serialized correctly."""
         sample_session.chunk_manifest = []
 
         await session_store.create_session(sample_session)
 
         pipeline = mock_redis.pipeline.return_value
-        call_args = pipeline.hset.call_args
+        # Story 4.1: First call is session data
+        call_args = pipeline.hset.call_args_list[0]
         data = call_args[1]["mapping"]
         chunk_manifest_json = data["chunk_manifest"]
 
-        parsed = json.loads(chunk_manifest_json)
-        assert parsed == []
+        # Verify it's JSON array "[]"
+        assert chunk_manifest_json == "[]"
+        assert json.loads(chunk_manifest_json) == []
 
 
 class TestGetSession:
@@ -508,15 +518,16 @@ class TestDeleteSession:
         session_store: RedisSessionStore,
         mock_redis: AsyncMock,
     ) -> None:
-        """Test delete_session uses correct key pattern."""
+        """Test delete_session deletes both session and expiry metadata keys."""
         workspace_id = uuid4()
         session_id = uuid4()
-        mock_redis.delete.return_value = 1  # Key deleted
+        mock_redis.delete.return_value = 2  # Both keys deleted
 
         await session_store.delete_session(workspace_id, session_id)
 
-        expected_key = f"session:workspace_{workspace_id}:document_{session_id}"
-        mock_redis.delete.assert_called_once_with(expected_key)
+        expected_session_key = f"session:workspace_{workspace_id}:document_{session_id}"
+        expected_expiry_key = f"session:expiry:{session_id}"
+        mock_redis.delete.assert_called_once_with(expected_session_key, expected_expiry_key)
 
     @pytest.mark.asyncio
     async def test_is_idempotent_when_key_not_exists(
@@ -590,10 +601,13 @@ class TestKeyGeneration:
 
         await session_store.create_session(session_1)
         pipeline = mock_redis.pipeline.return_value
+        # Story 4.1: Each session creates 2 hset calls (session + metadata)
+        # First session's session data is at index 0
         key_1 = pipeline.hset.call_args_list[0][0][0]
 
         await session_store.create_session(session_2)
-        key_2 = pipeline.hset.call_args_list[1][0][0]
+        # Second session's session data is at index 2 (indices 0,1 = session_1, indices 2,3 = session_2)
+        key_2 = pipeline.hset.call_args_list[2][0][0]
 
         # Keys must be different (workspace isolation)
         assert key_1 != key_2
@@ -650,7 +664,8 @@ class TestSerializationEdgeCases:
         await session_store.create_session(sample_session)
 
         pipeline = mock_redis.pipeline.return_value
-        call_args = pipeline.hset.call_args
+        # Story 4.1: First call is session data
+        call_args = pipeline.hset.call_args_list[0]
         data = call_args[1]["mapping"]
         chunk_manifest_json = data["chunk_manifest"]
 
@@ -671,7 +686,8 @@ class TestSerializationEdgeCases:
         await session_store.create_session(sample_session)
 
         pipeline = mock_redis.pipeline.return_value
-        call_args = pipeline.hset.call_args
+        # Story 4.1: First call is session data
+        call_args = pipeline.hset.call_args_list[0]
         data = call_args[1]["mapping"]
 
         assert data["filename"] == sample_session.filename
@@ -689,8 +705,156 @@ class TestSerializationEdgeCases:
         await session_store.create_session(sample_session)
 
         pipeline = mock_redis.pipeline.return_value
-        call_args = pipeline.hset.call_args
+        # Story 4.1: First call is session data
+        call_args = pipeline.hset.call_args_list[0]
         data = call_args[1]["mapping"]
 
         assert data["offset"] == str(sample_session.size)
         assert data["size"] == str(sample_session.size)
+
+
+class TestExpiryMetadata:
+    """Tests for session expiry metadata functionality (Story 4.1)."""
+
+    @pytest.mark.asyncio
+    async def test_create_session_writes_expiry_metadata(
+        self,
+        session_store: RedisSessionStore,
+        mock_redis: AsyncMock,
+        sample_session: UploadSession,
+    ) -> None:
+        """Test create_session writes expiry metadata with 7-day TTL."""
+        await session_store.create_session(sample_session)
+
+        pipeline = mock_redis.pipeline.return_value
+
+        # Verify two HSET calls: one for session, one for expiry metadata
+        hset_calls = pipeline.hset.call_args_list
+        assert len(hset_calls) == 2
+
+        # First call: session data
+        session_key = (
+            f"session:workspace_{sample_session.workspace_id}:document_{sample_session.session_id}"
+        )
+        assert hset_calls[0][0][0] == session_key
+
+        # Second call: expiry metadata
+        expiry_key = f"session:expiry:{sample_session.session_id}"
+        assert hset_calls[1][0][0] == expiry_key
+
+        # Verify expiry metadata content
+        expiry_data = hset_calls[1][1]["mapping"]
+        assert expiry_data["session_id"] == str(sample_session.session_id)
+        assert expiry_data["workspace_id"] == str(sample_session.workspace_id)
+        assert expiry_data["expires_at"] == sample_session.expires_at.isoformat()
+        assert expiry_data["filename"] == sample_session.filename
+
+        # Verify two EXPIRE calls: one with 86400s (24h), one with 604800s (7d)
+        expire_calls = pipeline.expire.call_args_list
+        assert len(expire_calls) == 2
+        assert expire_calls[0][0] == (session_key, 86400)  # 24-hour TTL for session
+        assert expire_calls[1][0] == (expiry_key, 604800)  # 7-day TTL for metadata
+
+    @pytest.mark.asyncio
+    async def test_get_session_with_expiry_info_returns_active_session(
+        self,
+        session_store: RedisSessionStore,
+        mock_redis: AsyncMock,
+        sample_session: UploadSession,
+    ) -> None:
+        """Test get_session_with_expiry_info returns (session, None) for active session."""
+        # Mock session exists
+        redis_data = {
+            b"session_id": str(sample_session.session_id).encode(),
+            b"workspace_id": str(sample_session.workspace_id).encode(),
+            b"filename": sample_session.filename.encode(),
+            b"size": str(sample_session.size).encode(),
+            b"mime_type": sample_session.mime_type.encode(),
+            b"sha256_checksum": sample_session.sha256_checksum.value.encode(),
+            b"offset": str(sample_session.offset).encode(),
+            b"status": sample_session.status.value.encode(),
+            b"created_at": sample_session.created_at.isoformat().encode(),
+            b"expires_at": sample_session.expires_at.isoformat().encode(),
+            b"chunk_manifest": b"[]",
+        }
+        mock_redis.hgetall.return_value = redis_data
+
+        session, expiry_metadata = await session_store.get_session_with_expiry_info(
+            sample_session.workspace_id, sample_session.session_id
+        )
+
+        assert session is not None
+        assert session.session_id == sample_session.session_id
+        assert expiry_metadata is None
+
+    @pytest.mark.asyncio
+    async def test_get_session_with_expiry_info_returns_metadata_for_expired_session(
+        self,
+        session_store: RedisSessionStore,
+        mock_redis: AsyncMock,
+        sample_session: UploadSession,
+    ) -> None:
+        """Test get_session_with_expiry_info returns (None, metadata) for expired session."""
+
+        # Mock session doesn't exist (expired)
+        # But expiry metadata exists
+        def hgetall_side_effect(key):
+            session_key = f"session:workspace_{sample_session.workspace_id}:document_{sample_session.session_id}"
+            expiry_key = f"session:expiry:{sample_session.session_id}"
+
+            if key == session_key:
+                # Session expired (returns empty dict)
+                return {}
+            elif key == expiry_key:
+                # Expiry metadata exists
+                return {
+                    b"session_id": str(sample_session.session_id).encode(),
+                    b"workspace_id": str(sample_session.workspace_id).encode(),
+                    b"expires_at": sample_session.expires_at.isoformat().encode(),
+                    b"filename": sample_session.filename.encode(),
+                }
+            return {}
+
+        mock_redis.hgetall.side_effect = hgetall_side_effect
+
+        session, expiry_metadata = await session_store.get_session_with_expiry_info(
+            sample_session.workspace_id, sample_session.session_id
+        )
+
+        assert session is None
+        assert expiry_metadata is not None
+        assert expiry_metadata["session_id"] == str(sample_session.session_id)
+        assert expiry_metadata["workspace_id"] == str(sample_session.workspace_id)
+        assert expiry_metadata["expires_at"] == sample_session.expires_at.isoformat()
+        assert expiry_metadata["filename"] == sample_session.filename
+
+    @pytest.mark.asyncio
+    async def test_get_session_with_expiry_info_returns_none_for_never_existed(
+        self,
+        session_store: RedisSessionStore,
+        mock_redis: AsyncMock,
+    ) -> None:
+        """Test get_session_with_expiry_info returns (None, None) for never-existed session."""
+        # Mock both session and expiry metadata don't exist
+        mock_redis.hgetall.return_value = {}
+
+        session, expiry_metadata = await session_store.get_session_with_expiry_info(
+            uuid4(), uuid4()
+        )
+
+        assert session is None
+        assert expiry_metadata is None
+
+    @pytest.mark.asyncio
+    async def test_get_session_with_expiry_info_raises_infrastructure_error_on_redis_failure(
+        self,
+        session_store: RedisSessionStore,
+        mock_redis: AsyncMock,
+    ) -> None:
+        """Test get_session_with_expiry_info raises InfrastructureError on Redis failure."""
+        mock_redis.hgetall.side_effect = redis.exceptions.ConnectionError("Timeout")
+
+        with pytest.raises(
+            InfrastructureError, match="Failed to retrieve session with expiry info"
+        ):
+            await session_store.get_session_with_expiry_info(uuid4(), uuid4())

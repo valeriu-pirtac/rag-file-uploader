@@ -267,8 +267,10 @@ def test_abort_upload_idempotency_second_call_returns_404(
     assert second_response.status_code == 404
 
     # Verify error structure for second call
+    # With Story 4.1 patches, expiry metadata is deleted on abort, so we get SESSION_NOT_FOUND
     error_data = second_response.json()["detail"]
     assert error_data["error"] == "SESSION_NOT_FOUND"
+    assert "not found" in error_data["message"].lower()
 
 
 def test_abort_upload_with_invalid_uuid_returns_422(

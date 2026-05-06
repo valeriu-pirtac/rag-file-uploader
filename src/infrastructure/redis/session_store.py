@@ -78,6 +78,7 @@ from src.domain.exceptions import (
     SerializationError,
     SessionNotFoundError,
 )
+from src.domain.protocols.session_store import ExpiryMetadata
 from src.domain.value_objects import SessionStatus, SHA256Hash
 from src.infrastructure.redis.key_builder import session_key
 
@@ -143,6 +144,9 @@ class RedisSessionStore:
         Stores the session state in Redis as a Hash with automatic expiry
         after 24 hours. All fields are serialized appropriately for storage.
 
+        Also creates expiry metadata with 7-day TTL to support enhanced error
+        responses when clients attempt to access expired sessions.
+
         Args:
             session: UploadSession entity to persist.
 
@@ -151,17 +155,35 @@ class RedisSessionStore:
             SerializationError: If session data cannot be serialized.
         """
         key = session_key(session.workspace_id, session.session_id)
+        expiry_metadata_key = f"session:expiry:{session.session_id}"
 
         try:
             # Serialize UploadSession to Redis Hash format
             data = self._serialize_session(session)
 
+            # Prepare expiry metadata for graceful error handling
+            # This allows us to distinguish expired sessions from never-existed for 7 days
+            expiry_metadata = {
+                "session_id": str(session.session_id),
+                "workspace_id": str(session.workspace_id),
+                "expires_at": session.expires_at.isoformat(),
+                "filename": session.filename,
+            }
+
             # Store all fields and set TTL atomically using pipeline
             # Pipeline ensures both HSET and EXPIRE execute together,
             # preventing session from persisting without TTL if process crashes
             pipeline = self._redis.pipeline()
+
+            # Store session with 24-hour TTL
             pipeline.hset(key, mapping=data)
             pipeline.expire(key, self._ttl_seconds)
+
+            # Store expiry metadata with 7-day TTL (604800 seconds)
+            # This enables enhanced error responses for up to 7 days after expiry
+            pipeline.hset(expiry_metadata_key, mapping=expiry_metadata)
+            pipeline.expire(expiry_metadata_key, 604800)
+
             await pipeline.execute()
 
             logger.info(
@@ -170,6 +192,7 @@ class RedisSessionStore:
                     "workspace_id": str(session.workspace_id),
                     "session_id": str(session.session_id),
                     "ttl_seconds": self._ttl_seconds,
+                    "expiry_metadata_ttl": 604800,
                 },
             )
 
@@ -273,6 +296,158 @@ class RedisSessionStore:
             )
             raise SerializationError(f"Invalid session data: {e}") from e
 
+    async def get_session_with_expiry_info(
+        self,
+        workspace_id: UUID,
+        session_id: UUID,
+    ) -> tuple[UploadSession | None, ExpiryMetadata | None]:
+        """Retrieve session with expiry metadata for enhanced error responses.
+
+        This method supports graceful session expiry handling by distinguishing
+        between sessions that expired recently (within 7 days) vs sessions that
+        never existed or expired long ago.
+
+        Args:
+            workspace_id: Workspace UUID for isolation boundary.
+            session_id: Session UUID to retrieve.
+
+        Returns:
+            Tuple of (session, expiry_metadata):
+            - (session, None): Session exists and is active
+            - (None, metadata): Session expired within last 7 days, metadata available
+            - (None, None): Session never existed or expired >7 days ago
+
+        Raises:
+            InfrastructureError: If Redis operation fails.
+            SerializationError: If stored data is corrupted.
+
+        Examples:
+            >>> # Active session
+            >>> session, metadata = await store.get_session_with_expiry_info(ws_id, sess_id)
+            >>> if session is not None:
+            ...     # Session is active, use it normally
+            ...     print(f"Offset: {session.offset}")
+            >>>
+            >>> # Expired session
+            >>> session, metadata = await store.get_session_with_expiry_info(ws_id, sess_id)
+            >>> if session is None and metadata is not None:
+            ...     # Session expired, return SESSION_EXPIRED error with metadata
+            ...     expired_at = metadata["expired_at"]
+            ...     print(f"Session expired at {expired_at}")
+            >>>
+            >>> # Never existed
+            >>> session, metadata = await store.get_session_with_expiry_info(ws_id, sess_id)
+            >>> if session is None and metadata is None:
+            ...     # Session never existed, return SESSION_NOT_FOUND error
+            ...     print("Session not found")
+        """
+        key = session_key(workspace_id, session_id)
+        expiry_metadata_key = f"session:expiry:{session_id}"
+
+        try:
+            # Try to get session first
+            raw_session_data = await self._redis.hgetall(key)  # type: ignore[misc]
+
+            if raw_session_data:
+                # Session exists and is active
+                data = {
+                    k.decode() if isinstance(k, bytes) else k: v.decode()
+                    if isinstance(v, bytes)
+                    else v
+                    for k, v in raw_session_data.items()
+                }
+                session = self._deserialize_session(data)
+
+                logger.debug(
+                    "Session retrieved (active)",
+                    extra={
+                        "workspace_id": str(workspace_id),
+                        "session_id": str(session_id),
+                        "offset": session.offset,
+                    },
+                )
+
+                return (session, None)
+
+            # Session not found - check if expired (expiry metadata exists)
+            raw_expiry_data = await self._redis.hgetall(expiry_metadata_key)  # type: ignore[misc]
+
+            if raw_expiry_data:
+                # Session expired, metadata available
+                # Decode bytes to strings for all fields
+                decoded_data = {
+                    k.decode() if isinstance(k, bytes) else k: v.decode()
+                    if isinstance(v, bytes)
+                    else v
+                    for k, v in raw_expiry_data.items()
+                }
+
+                # Construct typed metadata dict with explicit keys
+                expiry_metadata: ExpiryMetadata = {
+                    "session_id": decoded_data.get("session_id", ""),
+                    "workspace_id": decoded_data.get("workspace_id", ""),
+                    "expires_at": decoded_data.get("expires_at", ""),
+                    "filename": decoded_data.get("filename", ""),
+                }
+
+                # Validate workspace isolation - metadata workspace_id must match request
+                metadata_workspace_id = expiry_metadata.get("workspace_id")
+                if metadata_workspace_id != str(workspace_id):
+                    logger.warning(
+                        "Workspace isolation violation - expiry metadata workspace mismatch",
+                        extra={
+                            "request_workspace_id": str(workspace_id),
+                            "metadata_workspace_id": metadata_workspace_id,
+                            "session_id": str(session_id),
+                        },
+                    )
+                    # Treat as not found to prevent cross-workspace data leakage
+                    return (None, None)
+
+                logger.debug(
+                    "Session expired (metadata available)",
+                    extra={
+                        "workspace_id": str(workspace_id),
+                        "session_id": str(session_id),
+                        "expired_at": expiry_metadata.get("expires_at"),
+                    },
+                )
+
+                return (None, expiry_metadata)
+
+            # Session never existed or expired >7 days ago
+            logger.debug(
+                "Session not found (never existed or expired >7 days ago)",
+                extra={
+                    "workspace_id": str(workspace_id),
+                    "session_id": str(session_id),
+                },
+            )
+
+            return (None, None)
+
+        except redis.exceptions.RedisError as e:
+            logger.error(
+                "Redis operation failed during get_session_with_expiry_info",
+                extra={
+                    "workspace_id": str(workspace_id),
+                    "session_id": str(session_id),
+                    "error": str(e),
+                },
+            )
+            raise InfrastructureError(f"Failed to retrieve session with expiry info: {e}") from e
+
+        except (KeyError, ValueError, json.JSONDecodeError) as e:
+            logger.error(
+                "Deserialization failed during get_session_with_expiry_info",
+                extra={
+                    "workspace_id": str(workspace_id),
+                    "session_id": str(session_id),
+                    "error": str(e),
+                },
+            )
+            raise SerializationError(f"Invalid session or expiry data: {e}") from e
+
     async def update_session(self, session: UploadSession) -> None:
         """Update an existing upload session.
 
@@ -361,7 +536,8 @@ class RedisSessionStore:
         """Delete an upload session from storage.
 
         This operation is idempotent - deleting a non-existent session does
-        not raise an exception.
+        not raise an exception. Also removes expiry metadata to prevent
+        confusion when user explicitly aborts a session.
 
         Args:
             workspace_id: Workspace UUID for isolation boundary.
@@ -371,10 +547,11 @@ class RedisSessionStore:
             InfrastructureError: If Redis operation fails.
         """
         key = session_key(workspace_id, session_id)
+        expiry_metadata_key = f"session:expiry:{session_id}"
 
         try:
-            # Delete key (returns 1 if deleted, 0 if didn't exist)
-            deleted_count = await self._redis.delete(key)
+            # Delete both session and expiry metadata keys
+            deleted_count = await self._redis.delete(key, expiry_metadata_key)
 
             if deleted_count == 0:
                 logger.warning(
@@ -386,10 +563,11 @@ class RedisSessionStore:
                 )
             else:
                 logger.info(
-                    "Session deleted",
+                    "Session deleted (including expiry metadata)",
                     extra={
                         "workspace_id": str(workspace_id),
                         "session_id": str(session_id),
+                        "keys_deleted": deleted_count,
                     },
                 )
 

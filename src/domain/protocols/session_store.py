@@ -67,10 +67,23 @@ Examples:
     ... )
 """
 
-from typing import Protocol
+from typing import Protocol, TypedDict
 from uuid import UUID
 
 from src.domain.entities import UploadSession
+
+
+class ExpiryMetadata(TypedDict):
+    """Typed structure for session expiry metadata.
+
+    This metadata is stored separately with 7-day TTL to distinguish
+    expired sessions from never-existed sessions.
+    """
+
+    session_id: str
+    workspace_id: str
+    expires_at: str  # ISO 8601 timestamp
+    filename: str
 
 
 class ISessionStore(Protocol):
@@ -181,6 +194,60 @@ class ISessionStore(Protocol):
             >>> # Non-existent session returns None
             >>> missing = await session_store.get_session(workspace_id, uuid4())
             >>> assert missing is None
+        """
+        ...
+
+    async def get_session_with_expiry_info(
+        self,
+        workspace_id: UUID,
+        session_id: UUID,
+    ) -> tuple[UploadSession | None, ExpiryMetadata | None]:
+        """Retrieve session with expiry metadata for enhanced error responses.
+
+        This method supports graceful session expiry handling by distinguishing
+        between sessions that expired recently (within 7 days) vs sessions that
+        never existed or expired long ago.
+
+        Args:
+            workspace_id: Workspace UUID for isolation boundary (required).
+            session_id: Session UUID to retrieve (required).
+
+        Returns:
+            Tuple of (session, expiry_metadata):
+            - (session, None): Session exists and is active
+            - (None, metadata): Session expired within last 7 days, metadata available
+            - (None, None): Session never existed or expired >7 days ago
+
+        Raises:
+            InfrastructureError: If storage system fails (connection error, timeout).
+            SerializationError: If stored data is corrupted.
+
+        Expiry Metadata Format:
+            {
+                "expired_at": "2026-05-01T12:00:00Z",  # ISO 8601 timestamp
+                "workspace_id": "uuid-string",
+                "filename": "original-filename.pdf"
+            }
+
+        Use Case:
+            This method enables presentation layer to provide clear error messages
+            like "Session expired 2 hours ago" instead of generic "Session not found".
+
+        Examples:
+            >>> # Active session
+            >>> session, metadata = await store.get_session_with_expiry_info(ws_id, sess_id)
+            >>> if session is not None:
+            ...     print(f"Session active, offset: {session.offset}")
+            >>>
+            >>> # Expired session (recently)
+            >>> session, metadata = await store.get_session_with_expiry_info(ws_id, sess_id)
+            >>> if session is None and metadata is not None:
+            ...     print(f"Session expired at {metadata['expired_at']}")
+            >>>
+            >>> # Never existed
+            >>> session, metadata = await store.get_session_with_expiry_info(ws_id, sess_id)
+            >>> if session is None and metadata is None:
+            ...     print("Session never existed")
         """
         ...
 
