@@ -538,3 +538,59 @@ class WorkspaceMismatchError(DomainException):
         )
 
         super().__init__(message)
+
+
+class IntegrityError(DomainException):
+    """Raised when file integrity validation fails.
+
+    This exception indicates that the SHA-256 hash computed from assembled
+    file data does not match the expected checksum, or that a duplicate file
+    was detected. This can occur due to:
+
+    - Data corruption during chunk storage or retrieval
+    - Chunk assembly ordering error
+    - Storage system corruption (Redis, S3)
+    - Malicious tampering attempt
+    - Bug in chunk assembly logic
+    - Duplicate file upload attempt
+
+    When this error occurs due to checksum mismatch, the assembled file is
+    deleted from storage to prevent corrupt data from persisting.
+
+    Attributes:
+        expected_checksum: The SHA-256 hash from session (None for duplicates)
+        computed_checksum: The SHA-256 hash computed from assembled file (None for duplicates)
+        file_id: File identifier for debugging and logging
+    """
+
+    def __init__(
+        self,
+        message: str,
+        expected_checksum: str | None,
+        computed_checksum: str | None,
+        file_id: UUID,
+    ) -> None:
+        """Initialize integrity error.
+
+        Args:
+            message: Human-readable error description
+            expected_checksum: The SHA-256 hash from session (None for duplicate file errors)
+            computed_checksum: The SHA-256 hash computed from file (None for duplicate file errors)
+            file_id: File identifier for debugging
+
+        Example:
+            >>> from uuid import uuid4
+            >>> error = IntegrityError(
+            ...     message="Assembled file checksum mismatch",
+            ...     expected_checksum="b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            ...     computed_checksum="a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447",
+            ...     file_id=uuid4()
+            ... )
+            >>> str(error)
+            'Assembled file checksum mismatch'
+        """
+        self.expected_checksum = expected_checksum
+        self.computed_checksum = computed_checksum
+        self.file_id = file_id
+
+        super().__init__(message)

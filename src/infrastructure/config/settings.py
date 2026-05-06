@@ -111,6 +111,10 @@ class AppSettings(BaseSettings):
     )
     s3_use_ssl: bool = Field(default=False, description="Use SSL for S3 connections")
     s3_region: str = Field(default="eu-west-2", description="S3 region")
+    s3_server_side_encryption: bool = Field(
+        default=True,
+        description="Enable server-side encryption (AES256) for S3 objects (requires KMS configuration for MinIO)",
+    )
 
     # NATS Configuration
     nats_url: str | None = Field(
