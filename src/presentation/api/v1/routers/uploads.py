@@ -73,6 +73,7 @@ from src.application.dto.process_chunk_request import ProcessChunkRequest
 from src.application.dto.upload_request import InitiateUploadRequest as InitiateUploadRequestDTO
 from src.application.dto.upload_response import InitiateUploadResponse as InitiateUploadResponseDTO
 from src.application.services.rate_limiter import RedisRateLimiter
+from src.application.use_cases.abort_upload import AbortUploadUseCase
 from src.application.use_cases.initiate_upload import InitiateUploadUseCase
 from src.application.use_cases.process_chunk import ProcessChunkUseCase
 from src.domain.exceptions import (
@@ -83,6 +84,7 @@ from src.domain.exceptions import (
     RateLimitExceededError,
     SessionNotFoundError,
     UnsupportedMediaTypeError,
+    WorkspaceMismatchError,
 )
 from src.domain.protocols.rate_limiter import IRateLimiter
 from src.domain.protocols.session_store import ISessionStore
@@ -1414,6 +1416,291 @@ async def query_upload_offset(
                 "Cache-Control": "no-store, no-cache, must-revalidate",
             },
         )
+
+    finally:
+        # Always clear context variables to prevent bleed between requests
+        clear_contextvars()
+
+
+@router.delete(
+    "/uploads/{upload_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Abort an active upload session",
+    description=(
+        "Cancels an active upload session and cleans up all associated state. "
+        "Rate limit counter is decremented to free up workspace capacity. "
+        "Requires OWNER role (write operation). "
+        "Idempotent - calling multiple times is safe."
+    ),
+    responses={
+        204: {
+            "description": "Session aborted successfully (no response body)",
+        },
+        401: {
+            "description": "Authentication failed (missing/invalid/expired JWT)",
+            "content": {"application/json": {"example": {"detail": "Authentication failed"}}},
+        },
+        403: {
+            "description": "Access denied (collaborator role or workspace mismatch)",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "rbac_rejection": {
+                            "summary": "Collaborator role attempting write operation",
+                            "value": {
+                                "error": "FORBIDDEN",
+                                "message": "Only workspace owners can abort upload sessions",
+                                "details": {
+                                    "required_role": "owner",
+                                    "your_role": "collaborator",
+                                },
+                            },
+                        },
+                        "workspace_mismatch": {
+                            "summary": "Session belongs to different workspace",
+                            "value": {
+                                "error": "WORKSPACE_MISMATCH",
+                                "message": "Upload session belongs to a different workspace",
+                                "details": {
+                                    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                                    "your_workspace_id": "123e4567-e89b-12d3-a456-426614174000",
+                                },
+                            },
+                        },
+                    }
+                }
+            },
+        },
+        404: {
+            "description": "Session not found or expired (24h TTL)",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "SESSION_NOT_FOUND",
+                        "message": "Upload session 550e8400-e29b-41d4-a716-446655440000 not found or expired",
+                        "details": {
+                            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                            "suggestion": "Session may have expired (24h TTL) or never existed",
+                        },
+                    }
+                }
+            },
+        },
+        503: {
+            "description": "Service unavailable (infrastructure failure)",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "INFRASTRUCTURE_ERROR",
+                        "message": "Storage system temporarily unavailable. Please retry.",
+                        "details": {"retry_guidance": "Retry after a few seconds"},
+                    }
+                }
+            },
+        },
+    },
+)
+async def abort_upload_session(
+    upload_id: UUID,
+    current_user: Annotated[JWTClaims, Depends(require_role(WorkspaceRole.OWNER))],
+    session_store: Annotated[ISessionStore, Depends(get_session_store)],
+    rate_limiter: Annotated[IRateLimiter, Depends(get_rate_limiter)],
+) -> Response:
+    """Abort an active upload session.
+
+    Cancels an active upload session and cleans up all associated state.
+    This is a write operation requiring OWNER role. Collaborators cannot
+    abort uploads.
+
+    Authentication & Authorization:
+        - Requires valid JWT in Authorization header (Bearer token)
+        - Requires workspace_role == OWNER (write operation)
+        - workspace_id extracted from JWT claims
+        - Collaborators receive 403 Forbidden
+
+    Request:
+        - No request body (DELETE method)
+        - No query parameters
+        - Path parameter: upload_id (UUID)
+
+    Response:
+        - 204 No Content on success (no response body)
+        - Error responses include JSON with error code, message, details
+
+    Cleanup Operations:
+        1. Update session status to ABORTED (audit trail)
+        2. Delete session from Redis (cleanup state)
+        3. Decrement rate limit counter (free workspace capacity)
+
+    Idempotency:
+        - Safe to call multiple times on same session
+        - First call: 204 No Content (session deleted)
+        - Subsequent calls: 404 Session Not Found (already deleted)
+        - This is acceptable idempotency behavior
+
+    Business Rules:
+        - Only OWNER can abort (collaborators get 403)
+        - Session must exist (404 if not found)
+        - Session must belong to workspace (403 if mismatch)
+        - Rate limit counter MUST be decremented (prevent leaks)
+
+    Error Handling:
+        - 401: Authentication failed (JWT validation)
+        - 403: Access denied (collaborator role OR workspace mismatch)
+        - 404: Session not found or expired
+        - 503: Infrastructure failure (Redis connection error)
+
+    Performance:
+        - No specific performance target (infrequent operation)
+        - Typically <100ms (Redis get, update, delete, counter decrement)
+
+    Args:
+        upload_id: Upload session UUID from path parameter
+        current_user: JWT claims from authentication (contains workspace_id)
+            Must have workspace_role == OWNER (enforced by require_role)
+        session_store: Injected session store for Redis operations
+        rate_limiter: Injected rate limiter for counter operations
+
+    Returns:
+        Response: 204 No Content (no response body)
+
+    Raises:
+        HTTPException: 401/403/404/503 with structured error details
+
+    Examples:
+        >>> # Success case - abort active session
+        >>> DELETE /v1/uploads/550e8400-e29b-41d4-a716-446655440000
+        >>> Authorization: Bearer <owner_token>
+        >>>
+        >>> # Response 204 No Content
+        >>> (no response body)
+        >>>
+        >>> # Session not found (expired or never existed)
+        >>> DELETE /v1/uploads/550e8400-e29b-41d4-a716-446655440000
+        >>> Authorization: Bearer <owner_token>
+        >>>
+        >>> # Response 404 Not Found
+        >>> {
+        ...     "error": "SESSION_NOT_FOUND",
+        ...     "message": "Upload session ... not found or expired",
+        ...     "details": {...}
+        ... }
+        >>>
+        >>> # Collaborator attempting abort (forbidden)
+        >>> DELETE /v1/uploads/550e8400-e29b-41d4-a716-446655440000
+        >>> Authorization: Bearer <collaborator_token>
+        >>>
+        >>> # Response 403 Forbidden
+        >>> {
+        ...     "error": "FORBIDDEN",
+        ...     "message": "Only workspace owners can abort upload sessions",
+        ...     "details": {"required_role": "owner", "your_role": "collaborator"}
+        ... }
+    """
+    # Structured logging context
+    bind_contextvars(
+        workspace_id=str(current_user.workspace_id),
+        session_id=str(upload_id),
+        endpoint="DELETE /uploads/{id}",
+        operation="abort_upload",
+    )
+
+    try:
+        log.info(
+            "abort_upload_request",
+            workspace_id=str(current_user.workspace_id),
+            session_id=str(upload_id),
+        )
+
+        # Create and execute use case
+        use_case = AbortUploadUseCase(
+            session_store=session_store,
+            rate_limiter=rate_limiter,
+        )
+
+        await use_case.execute(
+            workspace_id=current_user.workspace_id,
+            session_id=upload_id,
+        )
+
+        log.info(
+            "abort_upload_success",
+            workspace_id=str(current_user.workspace_id),
+            session_id=str(upload_id),
+        )
+
+        # 204 No Content - no response body
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    except SessionNotFoundError as e:
+        log.warning(
+            "abort_upload_session_not_found",
+            workspace_id=str(current_user.workspace_id),
+            session_id=str(upload_id),
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "SESSION_NOT_FOUND",
+                "message": f"Upload session {upload_id} not found or expired",
+                "details": {
+                    "session_id": str(upload_id),
+                    "suggestion": "Session may have expired (24h TTL) or never existed",
+                },
+            },
+        ) from e
+
+    except WorkspaceMismatchError as e:
+        log.error(
+            "abort_upload_workspace_mismatch",
+            workspace_id=str(current_user.workspace_id),
+            session_id=str(upload_id),
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "WORKSPACE_MISMATCH",
+                "message": "Upload session belongs to a different workspace",
+                "details": {
+                    "session_id": str(upload_id),
+                    "your_workspace_id": str(current_user.workspace_id),
+                },
+            },
+        ) from e
+
+    except InfrastructureError as e:
+        log.error(
+            "abort_upload_infrastructure_error",
+            workspace_id=str(current_user.workspace_id),
+            session_id=str(upload_id),
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "INFRASTRUCTURE_ERROR",
+                "message": "Storage system temporarily unavailable. Please retry.",
+                "details": {"retry_guidance": "Retry after a few seconds"},
+            },
+        ) from e
+
+    except Exception as e:
+        log.exception(
+            "abort_upload_unexpected_error",
+            workspace_id=str(current_user.workspace_id),
+            session_id=str(upload_id),
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "INTERNAL_SERVER_ERROR",
+                "message": "An unexpected error occurred. Please retry or contact support.",
+                "details": {},
+            },
+        ) from e
 
     finally:
         # Always clear context variables to prevent bleed between requests
