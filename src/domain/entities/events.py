@@ -206,6 +206,8 @@ class FileLoadCompletedEvent:
         UUIDs converted to string format.
         SHA256Hash converted to hex string.
 
+        Note: Uses camelCase for eventType and eventVersion per AC requirements.
+
         Returns:
             dict: Event as dictionary with envelope and payload structure
         """
@@ -214,8 +216,8 @@ class FileLoadCompletedEvent:
         uploaded_at_utc = self.uploaded_at.astimezone(UTC)
 
         return {
-            "event_version": self.event_version,
-            "event_type": self.event_type,
+            "eventVersion": self.event_version,  # camelCase per AC #2
+            "eventType": self.event_type,  # camelCase per AC #2
             "timestamp": timestamp_utc.isoformat(),
             "payload": {
                 "file_id": str(self.file_id),
