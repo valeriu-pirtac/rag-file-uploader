@@ -425,3 +425,210 @@ def test_checksum_verification_with_real_verifier(
     assert "computed_checksum" in response_data["detail"]["details"]
     assert response_data["detail"]["details"]["computed_checksum"] != wrong_checksum
     assert "suggestion" in response_data["detail"]["details"]
+
+
+@pytest.mark.integration
+def test_complete_resume_flow_with_head(
+    client: TestClient,
+    chunk_size: int,
+    first_chunk_data: bytes,
+    second_chunk_data: bytes,
+    first_chunk_checksum: str,
+    second_chunk_checksum: str,
+) -> None:
+    """Test complete resume flow: POST → PATCH → HEAD → PATCH.
+
+    Validates:
+        - POST creates session
+        - PATCH uploads first chunk successfully
+        - HEAD queries current offset (should be chunk_size)
+        - PATCH uploads second chunk from queried offset
+        - End-to-end resumability works correctly
+
+    This test verifies the core resumability workflow where client uses HEAD
+    to query current offset before resuming upload after disconnect.
+    """
+    total_size = chunk_size * 2
+
+    # STEP 1: Create session via POST
+    initiate_request = {
+        "filename": "resume-test.pdf",
+        "size": total_size,
+        "mimeType": "application/pdf",
+        "sha256Checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    }
+
+    response = client.post(
+        "/v1/uploads",
+        json=initiate_request,
+        headers={"Authorization": "Bearer valid-owner-token"},
+    )
+
+    assert response.status_code == 201
+    upload_id = response.json()["uploadId"]
+
+    # STEP 2: Upload first chunk via PATCH
+    first_chunk_headers = {
+        "Authorization": "Bearer valid-owner-token",
+        "Upload-Offset": "0",
+        "Upload-Length": str(total_size),
+        "Upload-Checksum": f"sha256 {first_chunk_checksum}",
+        "Content-Type": "application/offset+octet-stream",
+    }
+
+    response = client.patch(
+        f"/v1/uploads/{upload_id}",
+        headers=first_chunk_headers,
+        content=first_chunk_data,
+    )
+
+    assert response.status_code == 204
+    assert response.headers["Upload-Offset"] == str(chunk_size)
+
+    # STEP 3: Query current offset via HEAD (simulate disconnect/resume scenario)
+    response = client.head(
+        f"/v1/uploads/{upload_id}",
+        headers={"Authorization": "Bearer valid-owner-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["Upload-Offset"] == str(chunk_size)
+    assert response.headers["Upload-Length"] == str(total_size)
+    assert response.content == b""  # HEAD has no body
+
+    # STEP 4: Resume upload with second chunk from queried offset
+    queried_offset = int(response.headers["Upload-Offset"])
+    second_chunk_headers = {
+        "Authorization": "Bearer valid-owner-token",
+        "Upload-Offset": str(queried_offset),
+        "Upload-Length": str(total_size),
+        "Upload-Checksum": f"sha256 {second_chunk_checksum}",
+        "Content-Type": "application/offset+octet-stream",
+    }
+
+    response = client.patch(
+        f"/v1/uploads/{upload_id}",
+        headers=second_chunk_headers,
+        content=second_chunk_data,
+    )
+
+    assert response.status_code == 204
+    assert response.headers["Upload-Offset"] == str(total_size)
+
+
+@pytest.mark.integration
+def test_head_before_any_chunks(
+    client: TestClient,
+    chunk_size: int,
+) -> None:
+    """Test HEAD before uploading any chunks returns offset=0.
+
+    Validates:
+        - POST creates session
+        - HEAD immediately after POST returns Upload-Offset: 0
+        - Upload-Length matches total size from POST
+        - Client can query offset before uploading any chunks
+
+    This verifies HEAD endpoint works at the start of upload lifecycle.
+    """
+    total_size = chunk_size * 2
+
+    # STEP 1: Create session
+    initiate_request = {
+        "filename": "no-chunks.pdf",
+        "size": total_size,
+        "mimeType": "application/pdf",
+        "sha256Checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    }
+
+    response = client.post(
+        "/v1/uploads",
+        json=initiate_request,
+        headers={"Authorization": "Bearer valid-owner-token"},
+    )
+
+    assert response.status_code == 201
+    upload_id = response.json()["uploadId"]
+
+    # STEP 2: Query offset immediately (before any chunks)
+    response = client.head(
+        f"/v1/uploads/{upload_id}",
+        headers={"Authorization": "Bearer valid-owner-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["Upload-Offset"] == "0"
+    assert response.headers["Upload-Length"] == str(total_size)
+    assert response.content == b""
+
+
+@pytest.mark.integration
+def test_head_nonexistent_session(
+    client: TestClient,
+) -> None:
+    """Test HEAD with non-existent upload ID returns 404.
+
+    Validates:
+        - HEAD with random UUID returns 404 Session Not Found
+        - Error does not include body (HEAD semantics)
+
+    This verifies HEAD endpoint handles missing sessions correctly.
+    Note: Session expiry is tested in unit tests with mocks.
+    """
+    from uuid import uuid4
+
+    # Query non-existent session
+    upload_id = uuid4()
+    response = client.head(
+        f"/v1/uploads/{upload_id}",
+        headers={"Authorization": "Bearer valid-owner-token"},
+    )
+
+    assert response.status_code == 404
+    # HEAD responses have no body, even for errors
+    assert response.content == b""
+
+
+@pytest.mark.integration
+def test_head_allows_collaborator_role(
+    client: TestClient,
+    chunk_size: int,
+) -> None:
+    """Test HEAD allows COLLABORATOR role (read operation).
+
+    Validates:
+        - COLLABORATOR role can query offset (200 not 403)
+        - Read operations allow both OWNER and COLLABORATOR
+        - Different from POST/PATCH which require OWNER only
+
+    This verifies HEAD endpoint's role-based access control.
+    """
+    total_size = chunk_size
+
+    # STEP 1: Create session as OWNER
+    initiate_request = {
+        "filename": "collab-read.pdf",
+        "size": total_size,
+        "mimeType": "application/pdf",
+        "sha256Checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    }
+
+    response = client.post(
+        "/v1/uploads",
+        json=initiate_request,
+        headers={"Authorization": "Bearer valid-owner-token"},
+    )
+
+    assert response.status_code == 201
+    upload_id = response.json()["uploadId"]
+
+    # STEP 2: Query offset as COLLABORATOR
+    response = client.head(
+        f"/v1/uploads/{upload_id}",
+        headers={"Authorization": "Bearer valid-collaborator-token"},
+    )
+
+    # COLLABORATOR should be allowed to read (not 403)
+    assert response.status_code == 200
+    assert "Upload-Offset" in response.headers
+    assert "Upload-Length" in response.headers

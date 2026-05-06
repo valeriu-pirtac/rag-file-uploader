@@ -1140,3 +1140,265 @@ def test_upload_chunk_infrastructure_error(
     assert response_data["detail"]["error"] == "INFRASTRUCTURE_ERROR"
     assert "message" in response_data["detail"]
     assert "retry_guidance" in response_data["detail"]["details"]
+
+
+# HEAD /v1/uploads/{id} Tests
+
+
+@pytest.fixture
+def mock_session_store() -> AsyncMock:
+    """Create mock session store for HEAD endpoint testing."""
+    return AsyncMock()
+
+
+@pytest.fixture
+def mock_session_with_offset() -> Any:
+    """Create mock upload session with offset at 5MB (first chunk uploaded)."""
+    from src.domain.entities.upload_session import UploadSession
+    from src.domain.value_objects.session_status import SessionStatus
+
+    return UploadSession(
+        session_id=uuid4(),
+        workspace_id=uuid4(),
+        filename="test.pdf",
+        size=10485760,  # 10MB total
+        mime_type="application/pdf",
+        sha256_checksum="a" * 64,
+        offset=5242880,  # 5MB uploaded
+        status=SessionStatus.IN_PROGRESS,
+        chunk_manifest=[
+            {"index": 0, "size": 5242880, "checksum": "abc123"}
+        ],  # First chunk uploaded
+        created_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(hours=24),
+    )
+
+
+@pytest.fixture
+def client_with_head(
+    mock_session_store: AsyncMock, mock_current_user_owner: JWTClaims
+) -> TestClient:
+    """Create test client with HEAD endpoint and mocked dependencies."""
+    test_app = FastAPI()
+    test_app.include_router(uploads.router)
+
+    # Override dependencies
+    test_app.dependency_overrides[uploads.get_session_store] = lambda: mock_session_store
+    test_app.dependency_overrides[uploads.get_current_user] = lambda: mock_current_user_owner
+
+    return TestClient(test_app)
+
+
+def test_query_upload_offset_success(
+    client_with_head: TestClient,
+    mock_session_store: AsyncMock,
+    mock_session_with_offset: Any,
+) -> None:
+    """Test successful offset query returns 200 with offset/length headers.
+
+    Validates:
+        - 200 OK status code
+        - Upload-Offset header with current offset
+        - Upload-Length header with total size
+        - Empty response body (HEAD semantics)
+        - session_store.get_session called once
+    """
+    # Arrange
+    upload_id = mock_session_with_offset.session_id
+    mock_session_store.get_session.return_value = mock_session_with_offset
+
+    # Act
+    response = client_with_head.head(f"/v1/uploads/{upload_id}")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.headers["Upload-Offset"] == "5242880"
+    assert response.headers["Upload-Length"] == "10485760"
+    assert response.content == b""  # HEAD has no body
+    mock_session_store.get_session.assert_called_once()
+
+
+def test_query_upload_offset_allows_owner_role(
+    mock_session_store: AsyncMock,
+    mock_session_with_offset: Any,
+    mock_current_user_owner: JWTClaims,
+) -> None:
+    """Test OWNER role is allowed to query offset.
+
+    Validates:
+        - OWNER role returns 200 (not 403)
+        - Read operations allow both OWNER and COLLABORATOR
+    """
+    # Arrange
+    test_app = FastAPI()
+    test_app.include_router(uploads.router)
+    test_app.dependency_overrides[uploads.get_session_store] = lambda: mock_session_store
+    test_app.dependency_overrides[uploads.get_current_user] = lambda: mock_current_user_owner
+
+    client = TestClient(test_app)
+    upload_id = mock_session_with_offset.session_id
+    mock_session_store.get_session.return_value = mock_session_with_offset
+
+    # Act
+    response = client.head(f"/v1/uploads/{upload_id}")
+
+    # Assert
+    assert response.status_code == 200  # Not 403
+
+
+def test_query_upload_offset_allows_collaborator_role(
+    mock_session_store: AsyncMock,
+    mock_session_with_offset: Any,
+    mock_current_user_collaborator: JWTClaims,
+) -> None:
+    """Test COLLABORATOR role is allowed to query offset (read operation).
+
+    Validates:
+        - COLLABORATOR role returns 200 (not 403)
+        - Read operations allow both OWNER and COLLABORATOR
+        - Different from POST/PATCH which require OWNER only
+    """
+    # Arrange
+    test_app = FastAPI()
+    test_app.include_router(uploads.router)
+    test_app.dependency_overrides[uploads.get_session_store] = lambda: mock_session_store
+    test_app.dependency_overrides[uploads.get_current_user] = lambda: mock_current_user_collaborator
+
+    client = TestClient(test_app)
+    upload_id = mock_session_with_offset.session_id
+    mock_session_store.get_session.return_value = mock_session_with_offset
+
+    # Act
+    response = client.head(f"/v1/uploads/{upload_id}")
+
+    # Assert
+    assert response.status_code == 200  # COLLABORATOR allowed for read operations
+
+
+def test_query_upload_offset_session_not_found(
+    client_with_head: TestClient,
+    mock_session_store: AsyncMock,
+) -> None:
+    """Test session not found returns 404.
+
+    Validates:
+        - 404 Not Found status code
+        - HEAD response has no body (HTTP semantics)
+
+    Note: HEAD responses don't include error body, only status code.
+    """
+    # Arrange
+    upload_id = uuid4()
+    mock_session_store.get_session.return_value = None  # Session not found
+
+    # Act
+    response = client_with_head.head(f"/v1/uploads/{upload_id}")
+
+    # Assert
+    assert response.status_code == 404
+    # HEAD responses have no body, even for errors
+    assert response.content == b""
+
+
+def test_query_upload_offset_infrastructure_error(
+    client_with_head: TestClient,
+    mock_session_store: AsyncMock,
+) -> None:
+    """Test infrastructure error returns 503.
+
+    Validates:
+        - 503 Service Unavailable status code
+        - HEAD response has no body (HTTP semantics)
+
+    Note: HEAD responses don't include error body, only status code.
+    """
+    from src.domain.exceptions import InfrastructureError
+
+    # Arrange
+    upload_id = uuid4()
+    mock_session_store.get_session.side_effect = InfrastructureError("Redis connection failed")
+
+    # Act
+    response = client_with_head.head(f"/v1/uploads/{upload_id}")
+
+    # Assert
+    assert response.status_code == 503
+    # HEAD responses have no body, even for errors
+    assert response.content == b""
+
+
+def test_query_upload_offset_zero(
+    client_with_head: TestClient,
+    mock_session_store: AsyncMock,
+    mock_session_with_offset: Any,
+) -> None:
+    """Test offset=0 when no chunks uploaded yet.
+
+    Validates:
+        - Upload-Offset header = "0"
+        - Upload-Length header has total size
+        - Client can query offset before uploading any chunks
+    """
+    # Arrange
+    mock_session_with_offset.offset = 0  # No chunks uploaded
+    upload_id = mock_session_with_offset.session_id
+    mock_session_store.get_session.return_value = mock_session_with_offset
+
+    # Act
+    response = client_with_head.head(f"/v1/uploads/{upload_id}")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.headers["Upload-Offset"] == "0"
+    assert response.headers["Upload-Length"] == "10485760"
+
+
+def test_query_upload_offset_full_upload(
+    client_with_head: TestClient,
+    mock_session_store: AsyncMock,
+    mock_session_with_offset: Any,
+) -> None:
+    """Test endpoint works when offset equals size (upload complete).
+
+    Validates:
+        - Upload-Offset = Upload-Length (both 10485760)
+        - Endpoint works even after upload complete
+        - Client can query offset to verify completion
+    """
+    # Arrange
+    mock_session_with_offset.offset = 10485760  # Full upload complete
+    upload_id = mock_session_with_offset.session_id
+    mock_session_store.get_session.return_value = mock_session_with_offset
+
+    # Act
+    response = client_with_head.head(f"/v1/uploads/{upload_id}")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.headers["Upload-Offset"] == "10485760"
+    assert response.headers["Upload-Length"] == "10485760"
+
+
+def test_query_upload_offset_no_body(
+    client_with_head: TestClient,
+    mock_session_store: AsyncMock,
+    mock_session_with_offset: Any,
+) -> None:
+    """Test response has no body (HEAD method semantics).
+
+    Validates:
+        - Response body is empty
+        - HEAD method returns headers only
+        - Complies with HTTP HEAD semantics
+    """
+    # Arrange
+    upload_id = mock_session_with_offset.session_id
+    mock_session_store.get_session.return_value = mock_session_with_offset
+
+    # Act
+    response = client_with_head.head(f"/v1/uploads/{upload_id}")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.content == b""  # Empty body
+    assert len(response.content) == 0

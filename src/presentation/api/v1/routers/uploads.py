@@ -57,6 +57,7 @@ Examples:
     >>> print(response.json()["details"]["current_uploads"])  # 10
 """
 
+import asyncio
 import base64
 import binascii
 from functools import lru_cache
@@ -87,10 +88,12 @@ from src.domain.protocols.rate_limiter import IRateLimiter
 from src.domain.protocols.session_store import ISessionStore
 from src.domain.services.chunk_verifier import ChunkVerifier
 from src.domain.value_objects.jwt_claims import JWTClaims
+from src.domain.value_objects.session_status import SessionStatus
 from src.domain.value_objects.workspace_role import WorkspaceRole
 from src.infrastructure.auth.rbac_middleware import require_role
 from src.infrastructure.config.settings import get_settings
 from src.infrastructure.redis.session_store import RedisSessionStore
+from src.presentation.api.middleware.auth import get_current_user
 from src.presentation.api.v1.schemas.upload_schemas import (
     InitiateUploadRequest,
     InitiateUploadResponse,
@@ -1100,3 +1103,318 @@ async def upload_chunk(
                 "details": {},
             },
         ) from e
+
+
+@router.head(
+    "/uploads/{upload_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Query current upload offset for resumability",
+    description=(
+        "Returns current verified byte offset in Upload-Offset header. "
+        "Client calls this before resuming to determine where to continue. "
+        "Critical performance target: <50ms p99 (hot retry path). "
+        "Allows both OWNER and COLLABORATOR roles (read operation)."
+    ),
+    responses={
+        200: {
+            "description": "Session found - offset returned in headers",
+            "headers": {
+                "Upload-Offset": {
+                    "description": "Current verified byte offset (start position for next chunk)",
+                    "schema": {"type": "integer"},
+                    "example": 5242880,
+                },
+                "Upload-Length": {
+                    "description": "Total file size in bytes (from session initiation)",
+                    "schema": {"type": "integer"},
+                    "example": 10485760,
+                },
+            },
+        },
+        401: {
+            "description": "Authentication failed (missing/invalid/expired JWT)",
+            "content": {"application/json": {"example": {"detail": "Authentication failed"}}},
+        },
+        404: {
+            "description": "Session not found or expired (24h TTL)",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "SESSION_NOT_FOUND",
+                        "message": "Upload session 550e8400-e29b-41d4-a716-446655440000 not found or expired",
+                        "details": {
+                            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                            "suggestion": "Start a new upload session via POST /v1/uploads",
+                        },
+                    }
+                }
+            },
+        },
+        410: {
+            "description": "Session terminated (complete, aborted, or failed)",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "SESSION_TERMINATED",
+                        "message": "Upload session 550e8400-e29b-41d4-a716-446655440000 is complete and cannot be resumed",
+                        "details": {
+                            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                            "status": "complete",
+                            "suggestion": "Start a new upload session via POST /v1/uploads",
+                        },
+                    }
+                }
+            },
+        },
+        503: {
+            "description": "Service unavailable (infrastructure failure)",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "INFRASTRUCTURE_ERROR",
+                        "message": "Storage system temporarily unavailable. Please retry.",
+                        "details": {"retry_guidance": "Retry after a few seconds"},
+                    }
+                }
+            },
+        },
+    },
+)
+async def query_upload_offset(
+    upload_id: UUID,
+    current_user: Annotated[JWTClaims, Depends(get_current_user)],
+    session_store: Annotated[ISessionStore, Depends(get_session_store)],
+) -> Response:
+    """Query current upload offset for resumability.
+
+    Returns current verified byte offset and total file size in response headers.
+    This is THE critical endpoint for upload resumability - client must call this
+    before resuming to determine where to continue from.
+
+    Authentication & Authorization:
+        - Requires valid JWT in Authorization header (Bearer token)
+        - Allows both OWNER and COLLABORATOR roles (read operation)
+        - workspace_id extracted from JWT claims
+
+    Request:
+        - No request body (HEAD method)
+        - No query parameters
+        - Path parameter: upload_id (UUID)
+
+    Response Headers (Success):
+        - Upload-Offset: Current verified byte offset (start position for next chunk)
+        - Upload-Length: Total file size in bytes (from session initiation)
+
+    Response Body:
+        - Empty (HEAD method returns headers only, no body)
+
+    Error Handling:
+        - 401: Authentication failed (missing/invalid/expired JWT)
+        - 404: Session not found or expired (24h TTL)
+        - 503: Infrastructure failure (Redis connection error)
+
+    Performance (Critical - NFR-P2):
+        - Target: <50ms at p99 (hot retry path)
+        - This is faster than POST (<200ms) and PATCH (<100ms)
+        - Why so fast? Clients call this BEFORE every resume attempt
+        - Implementation: Single Redis lookup, no business logic
+
+    tus Protocol Compliance:
+        - HEAD offset query is core tus v1.0.0 protocol operation
+        - Upload-Offset header indicates where client should resume
+        - Upload-Length header provides total size for validation
+
+    Args:
+        upload_id: Upload session UUID from path parameter
+        current_user: JWT claims from authentication (contains workspace_id)
+        session_store: Injected session store for Redis operations
+
+    Returns:
+        Response: 200 OK with Upload-Offset and Upload-Length headers, empty body
+
+    Raises:
+        HTTPException: 401/404/503 with structured error details
+
+    Examples:
+        >>> # Success case - query offset after uploading first chunk
+        >>> HEAD /v1/uploads/550e8400-e29b-41d4-a716-446655440000
+        >>> Authorization: Bearer <token>
+        >>>
+        >>> # Response 200 OK
+        >>> Upload-Offset: 5242880
+        >>> Upload-Length: 10485760
+        >>> (empty body)
+        >>>
+        >>> # Client interprets: "I've uploaded 5MB of 10MB total. Resume from byte 5242880."
+        >>>
+        >>> # Session not found (expired or never existed)
+        >>> HEAD /v1/uploads/550e8400-e29b-41d4-a716-446655440000
+        >>> Authorization: Bearer <token>
+        >>>
+        >>> # Response 404 Not Found
+        >>> {
+        ...     "error": "SESSION_NOT_FOUND",
+        ...     "message": "Upload session 550e8400-e29b-41d4-a716-446655440000 not found or expired",
+        ...     "details": {
+        ...         "session_id": "550e8400-e29b-41d4-a716-446655440000",
+        ...         "suggestion": "Start a new upload session via POST /v1/uploads"
+        ...     }
+        ... }
+    """
+    # Bind user context for structured logging
+    bind_contextvars(
+        user_id=str(current_user.user_id),
+        workspace_id=str(current_user.workspace_id),
+        session_id=str(upload_id),
+    )
+
+    try:
+        log.info(
+            "query_upload_offset_request",
+            session_id=str(upload_id),
+        )
+
+        try:
+            # Retrieve session from Redis with timeout (5s max for <50ms p99 target)
+            session = await asyncio.wait_for(
+                session_store.get_session(
+                    workspace_id=current_user.workspace_id,
+                    session_id=upload_id,
+                ),
+                timeout=5.0,
+            )
+
+        except TimeoutError as e:
+            # Timeout treated as infrastructure error
+            log.error(
+                "query_upload_offset_timeout",
+                timeout_seconds=5.0,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "INFRASTRUCTURE_ERROR",
+                    "message": "Storage system response timeout. Please retry.",
+                    "details": {
+                        "retry_guidance": "Retry after a few seconds",
+                    },
+                },
+            ) from e
+
+        except InfrastructureError as e:
+            # 503 Service Unavailable - Redis connection failure
+            log.error(
+                "query_upload_offset_infrastructure_error",
+                error=str(e),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "INFRASTRUCTURE_ERROR",
+                    "message": str(e),
+                    "details": {
+                        "retry_guidance": "Retry after a few seconds",
+                    },
+                },
+            ) from e
+
+        except Exception as e:
+            # 500 Internal Server Error - unexpected error
+            log.error(
+                "query_upload_offset_unexpected_error",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error": "INTERNAL_ERROR",
+                    "message": "An unexpected error occurred",
+                    "details": {"error_type": type(e).__name__},
+                },
+            ) from e
+
+        # Check if session exists (None means not found or expired)
+        if session is None:
+            log.warning(
+                "query_upload_offset_session_not_found",
+                session_id=str(upload_id),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "SESSION_NOT_FOUND",
+                    "message": f"Upload session {upload_id} not found or expired",
+                    "details": {
+                        "session_id": str(upload_id),
+                        "suggestion": "Start a new upload session via POST /v1/uploads",
+                    },
+                },
+            )
+
+        # Check if session is in a terminated state
+        if session.status in (
+            SessionStatus.COMPLETE,
+            SessionStatus.ABORTED,
+            SessionStatus.FAILED,
+        ):
+            log.warning(
+                "query_upload_offset_session_terminated",
+                session_id=str(upload_id),
+                status=session.status.value,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail={
+                    "error": "SESSION_TERMINATED",
+                    "message": f"Upload session {upload_id} is {session.status.value} and cannot be resumed",
+                    "details": {
+                        "session_id": str(upload_id),
+                        "status": session.status.value,
+                        "suggestion": "Start a new upload session via POST /v1/uploads",
+                    },
+                },
+            )
+
+        # Validate offset and size (detect data corruption)
+        if session.offset < 0 or session.offset > session.size:
+            log.error(
+                "query_upload_offset_data_corruption",
+                session_id=str(upload_id),
+                offset=session.offset,
+                size=session.size,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error": "DATA_CORRUPTION",
+                    "message": "Invalid session state detected",
+                    "details": {
+                        "session_id": str(upload_id),
+                        "suggestion": "Contact support",
+                    },
+                },
+            )
+
+        # Session found and valid - return offset and length headers
+        log.info(
+            "query_upload_offset_success",
+            session_id=str(upload_id),
+            offset=session.offset,
+            size=session.size,
+            status=session.status.value,
+        )
+
+        # Return 200 OK with Upload-Offset, Upload-Length, and Cache-Control headers
+        return Response(
+            status_code=status.HTTP_200_OK,
+            headers={
+                "Upload-Offset": str(session.offset),
+                "Upload-Length": str(session.size),
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+            },
+        )
+
+    finally:
+        # Always clear context variables to prevent bleed between requests
+        clear_contextvars()
