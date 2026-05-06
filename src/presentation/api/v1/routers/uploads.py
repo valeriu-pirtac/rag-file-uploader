@@ -60,6 +60,7 @@ Examples:
 import asyncio
 import base64
 import binascii
+from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Annotated
 from uuid import UUID
@@ -726,6 +727,7 @@ async def upload_chunk(
     request: Request,
     current_user: Annotated[JWTClaims, Depends(require_role(WorkspaceRole.OWNER))],
     use_case: Annotated[ProcessChunkUseCase, Depends(get_process_chunk_use_case)],
+    session_store: Annotated[ISessionStore, Depends(get_session_store)],
     upload_offset: Annotated[int, Header(alias="Upload-Offset")],
     upload_length: Annotated[int, Header(alias="Upload-Length")],
     upload_checksum: Annotated[str, Header(alias="Upload-Checksum")],
@@ -992,7 +994,48 @@ async def upload_chunk(
         )
 
     except SessionNotFoundError as e:
-        # 404 Session Not Found - expired or never existed
+        # 404 Session Not Found - check if expired vs never existed
+        # Query expiry metadata to provide enhanced error response
+        _, expiry_metadata = await session_store.get_session_with_expiry_info(
+            current_user.workspace_id, upload_id
+        )
+
+        if expiry_metadata:
+            # Session expired - provide enhanced error response
+            try:
+                expired_at = datetime.fromisoformat(expiry_metadata["expires_at"])
+                hours_ago = max(0, (datetime.now(UTC) - expired_at).total_seconds() / 3600)
+
+                log.warning(
+                    "upload_chunk_session_expired",
+                    session_id=str(upload_id),
+                    expired_at=expiry_metadata["expires_at"],
+                    hours_ago=int(hours_ago),
+                )
+                clear_contextvars()
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={
+                        "error": "SESSION_EXPIRED",
+                        "message": f"Upload session expired {int(hours_ago)} hours ago",
+                        "details": {
+                            "session_id": str(upload_id),
+                            "expired_at": expiry_metadata["expires_at"],
+                            "expired_hours_ago": int(hours_ago),
+                            "suggestion": "Session expired. Start a new upload via POST /v1/uploads",
+                        },
+                    },
+                ) from e
+            except (KeyError, ValueError) as metadata_error:
+                # Malformed or incomplete expiry metadata - fall back to generic not found
+                log.warning(
+                    "upload_chunk_expiry_metadata_invalid",
+                    session_id=str(upload_id),
+                    error=str(metadata_error),
+                )
+                # Fall through to SESSION_NOT_FOUND below
+
+        # Session never existed or expired >7 days ago (or metadata was invalid)
         log.warning(
             "upload_chunk_session_not_found",
             session_id=str(upload_id),
@@ -1278,8 +1321,8 @@ async def query_upload_offset(
 
         try:
             # Retrieve session from Redis with timeout (5s max for <50ms p99 target)
-            session = await asyncio.wait_for(
-                session_store.get_session(
+            session, expiry_metadata = await asyncio.wait_for(
+                session_store.get_session_with_expiry_info(
                     workspace_id=current_user.workspace_id,
                     session_id=upload_id,
                 ),
@@ -1338,15 +1381,53 @@ async def query_upload_offset(
 
         # Check if session exists (None means not found or expired)
         if session is None:
+            # Check if we have expiry metadata (session expired recently)
+            if expiry_metadata:
+                # Session expired - provide enhanced error response
+                try:
+                    expired_at = datetime.fromisoformat(expiry_metadata["expires_at"])
+                    hours_ago = max(0, (datetime.now(UTC) - expired_at).total_seconds() / 3600)
+
+                    log.warning(
+                        "query_upload_offset_session_expired",
+                        session_id=str(upload_id),
+                        expired_at=expiry_metadata["expires_at"],
+                        hours_ago=int(hours_ago),
+                    )
+
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail={
+                            "error": "SESSION_EXPIRED",
+                            "message": f"Upload session expired {int(hours_ago)} hours ago",
+                            "details": {
+                                "session_id": str(upload_id),
+                                "expired_at": expiry_metadata["expires_at"],
+                                "expired_hours_ago": int(hours_ago),
+                                "suggestion": "Session expired. Start a new upload via POST /v1/uploads",
+                            },
+                        },
+                    )
+                except (KeyError, ValueError) as metadata_error:
+                    # Malformed or incomplete expiry metadata - fall back to generic not found
+                    log.warning(
+                        "query_upload_offset_expiry_metadata_invalid",
+                        session_id=str(upload_id),
+                        error=str(metadata_error),
+                    )
+                    # Fall through to SESSION_NOT_FOUND below
+
+            # Session never existed or expired >7 days ago (or metadata was invalid)
             log.warning(
                 "query_upload_offset_session_not_found",
                 session_id=str(upload_id),
             )
+
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "SESSION_NOT_FOUND",
-                    "message": f"Upload session {upload_id} not found or expired",
+                    "message": f"Upload session {upload_id} not found",
                     "details": {
                         "session_id": str(upload_id),
                         "suggestion": "Start a new upload session via POST /v1/uploads",
@@ -1633,6 +1714,47 @@ async def abort_upload_session(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     except SessionNotFoundError as e:
+        # Check if session expired vs never existed
+        _, expiry_metadata = await session_store.get_session_with_expiry_info(
+            current_user.workspace_id, upload_id
+        )
+
+        if expiry_metadata:
+            # Session expired - cannot abort expired session
+            try:
+                expired_at = datetime.fromisoformat(expiry_metadata["expires_at"])
+                hours_ago = max(0, (datetime.now(UTC) - expired_at).total_seconds() / 3600)
+
+                log.info(
+                    "abort_upload_session_expired",
+                    workspace_id=str(current_user.workspace_id),
+                    session_id=str(upload_id),
+                    expired_at=expiry_metadata["expires_at"],
+                    note="Session already expired and cleaned up by Redis TTL",
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={
+                        "error": "SESSION_EXPIRED",
+                        "message": f"Upload session expired {int(hours_ago)} hours ago and was automatically cleaned up",
+                        "details": {
+                            "session_id": str(upload_id),
+                            "expired_at": expiry_metadata["expires_at"],
+                            "expired_hours_ago": int(hours_ago),
+                            "suggestion": "Session expired. Start a new upload via POST /v1/uploads",
+                        },
+                    },
+                ) from e
+            except (KeyError, ValueError) as metadata_error:
+                # Malformed or incomplete expiry metadata - fall back to generic not found
+                log.warning(
+                    "abort_upload_expiry_metadata_invalid",
+                    session_id=str(upload_id),
+                    error=str(metadata_error),
+                )
+                # Fall through to SESSION_NOT_FOUND below
+
+        # Session never existed (or metadata was invalid)
         log.warning(
             "abort_upload_session_not_found",
             workspace_id=str(current_user.workspace_id),
@@ -1643,10 +1765,10 @@ async def abort_upload_session(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "SESSION_NOT_FOUND",
-                "message": f"Upload session {upload_id} not found or expired",
+                "message": f"Upload session {upload_id} not found",
                 "details": {
                     "session_id": str(upload_id),
-                    "suggestion": "Session may have expired (24h TTL) or never existed",
+                    "suggestion": "Session does not exist",
                 },
             },
         ) from e

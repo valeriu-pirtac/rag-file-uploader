@@ -732,6 +732,7 @@ def valid_upload_headers(valid_chunk_checksum: str) -> dict[str, str]:
 def app_with_patch_endpoint(
     mock_process_chunk_use_case: AsyncMock,
     mock_current_user_owner: JWTClaims,
+    mock_session_store: AsyncMock,
 ) -> FastAPI:
     """Create FastAPI test app with mocked dependencies for PATCH endpoint."""
     test_app = FastAPI()
@@ -740,6 +741,9 @@ def app_with_patch_endpoint(
     # Override dependencies with mocks
     async def override_get_process_chunk_use_case() -> AsyncMock:
         return mock_process_chunk_use_case
+
+    async def override_get_session_store() -> AsyncMock:
+        return mock_session_store
 
     # Mock Redis client to avoid settings requirement
     def override_get_redis_client() -> MagicMock:
@@ -760,6 +764,7 @@ def app_with_patch_endpoint(
     test_app.dependency_overrides[uploads.get_process_chunk_use_case] = (
         override_get_process_chunk_use_case
     )
+    test_app.dependency_overrides[uploads.get_session_store] = override_get_session_store
     test_app.dependency_overrides[uploads.get_redis_client] = override_get_redis_client
     test_app.dependency_overrides[require_role(WorkspaceRole.OWNER)] = override_require_role
     test_app.dependency_overrides[get_current_user] = override_get_current_user
@@ -912,6 +917,7 @@ def test_upload_chunk_hex_checksum_parsing(
 def test_upload_chunk_session_not_found(
     client_with_patch: TestClient,
     mock_process_chunk_use_case: AsyncMock,
+    mock_session_store: AsyncMock,
     valid_chunk_data: bytes,
     valid_upload_headers: dict[str, str],
 ) -> None:
@@ -926,6 +932,8 @@ def test_upload_chunk_session_not_found(
 
     # Mock use case to raise SessionNotFoundError
     upload_id = uuid4()
+    # Story 4.1: Mock expiry check returns (None, None) for never-existed session
+    mock_session_store.get_session_with_expiry_info.return_value = (None, None)
     mock_process_chunk_use_case.execute.side_effect = SessionNotFoundError(
         f"Upload session {upload_id} not found or expired"
     )
@@ -1201,11 +1209,12 @@ def test_query_upload_offset_success(
         - Upload-Offset header with current offset
         - Upload-Length header with total size
         - Empty response body (HEAD semantics)
-        - session_store.get_session called once
+        - session_store.get_session_with_expiry_info called once
     """
     # Arrange
     upload_id = mock_session_with_offset.session_id
-    mock_session_store.get_session.return_value = mock_session_with_offset
+    # Story 4.1: Now returns (session, None) tuple for active session
+    mock_session_store.get_session_with_expiry_info.return_value = (mock_session_with_offset, None)
 
     # Act
     response = client_with_head.head(f"/v1/uploads/{upload_id}")
@@ -1215,7 +1224,7 @@ def test_query_upload_offset_success(
     assert response.headers["Upload-Offset"] == "5242880"
     assert response.headers["Upload-Length"] == "10485760"
     assert response.content == b""  # HEAD has no body
-    mock_session_store.get_session.assert_called_once()
+    mock_session_store.get_session_with_expiry_info.assert_called_once()
 
 
 def test_query_upload_offset_allows_owner_role(
@@ -1237,7 +1246,8 @@ def test_query_upload_offset_allows_owner_role(
 
     client = TestClient(test_app)
     upload_id = mock_session_with_offset.session_id
-    mock_session_store.get_session.return_value = mock_session_with_offset
+    # Story 4.1: Returns (session, None) tuple
+    mock_session_store.get_session_with_expiry_info.return_value = (mock_session_with_offset, None)
 
     # Act
     response = client.head(f"/v1/uploads/{upload_id}")
@@ -1266,7 +1276,8 @@ def test_query_upload_offset_allows_collaborator_role(
 
     client = TestClient(test_app)
     upload_id = mock_session_with_offset.session_id
-    mock_session_store.get_session.return_value = mock_session_with_offset
+    # Story 4.1: Returns (session, None) tuple
+    mock_session_store.get_session_with_expiry_info.return_value = (mock_session_with_offset, None)
 
     # Act
     response = client.head(f"/v1/uploads/{upload_id}")
@@ -1289,7 +1300,8 @@ def test_query_upload_offset_session_not_found(
     """
     # Arrange
     upload_id = uuid4()
-    mock_session_store.get_session.return_value = None  # Session not found
+    # Story 4.1: Returns (None, None) for non-existent session
+    mock_session_store.get_session_with_expiry_info.return_value = (None, None)
 
     # Act
     response = client_with_head.head(f"/v1/uploads/{upload_id}")
@@ -1316,7 +1328,9 @@ def test_query_upload_offset_infrastructure_error(
 
     # Arrange
     upload_id = uuid4()
-    mock_session_store.get_session.side_effect = InfrastructureError("Redis connection failed")
+    mock_session_store.get_session_with_expiry_info.side_effect = InfrastructureError(
+        "Redis connection failed"
+    )
 
     # Act
     response = client_with_head.head(f"/v1/uploads/{upload_id}")
@@ -1342,7 +1356,8 @@ def test_query_upload_offset_zero(
     # Arrange
     mock_session_with_offset.offset = 0  # No chunks uploaded
     upload_id = mock_session_with_offset.session_id
-    mock_session_store.get_session.return_value = mock_session_with_offset
+    # Story 4.1: Returns (session, None) tuple
+    mock_session_store.get_session_with_expiry_info.return_value = (mock_session_with_offset, None)
 
     # Act
     response = client_with_head.head(f"/v1/uploads/{upload_id}")
@@ -1368,7 +1383,8 @@ def test_query_upload_offset_full_upload(
     # Arrange
     mock_session_with_offset.offset = 10485760  # Full upload complete
     upload_id = mock_session_with_offset.session_id
-    mock_session_store.get_session.return_value = mock_session_with_offset
+    # Story 4.1: Returns (session, None) tuple
+    mock_session_store.get_session_with_expiry_info.return_value = (mock_session_with_offset, None)
 
     # Act
     response = client_with_head.head(f"/v1/uploads/{upload_id}")
@@ -1393,7 +1409,8 @@ def test_query_upload_offset_no_body(
     """
     # Arrange
     upload_id = mock_session_with_offset.session_id
-    mock_session_store.get_session.return_value = mock_session_with_offset
+    # Story 4.1: Returns (session, None) tuple
+    mock_session_store.get_session_with_expiry_info.return_value = (mock_session_with_offset, None)
 
     # Act
     response = client_with_head.head(f"/v1/uploads/{upload_id}")
