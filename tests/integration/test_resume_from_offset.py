@@ -241,6 +241,7 @@ async def test_head_returns_correct_offset_after_partial_upload(
 
 @pytest.mark.asyncio
 async def test_patch_continues_upload_from_offset(
+    redis_client,
     session_store: RedisSessionStore,
     sample_workspace_id: UUID,
     sample_session_id: UUID,
@@ -283,6 +284,7 @@ async def test_patch_continues_upload_from_offset(
     use_case = ProcessChunkUseCase(
         session_store=session_store,
         chunk_verifier=ChunkVerifier(),
+        redis_client=redis_client,
     )
 
     request = ProcessChunkRequest(
@@ -319,6 +321,7 @@ async def test_patch_continues_upload_from_offset(
 
 @pytest.mark.asyncio
 async def test_chunk_manifest_continuity_after_resume(
+    redis_client,
     session_store: RedisSessionStore,
     sample_workspace_id: UUID,
     sample_session_id: UUID,
@@ -347,6 +350,7 @@ async def test_chunk_manifest_continuity_after_resume(
     use_case = ProcessChunkUseCase(
         session_store=session_store,
         chunk_verifier=ChunkVerifier(),
+        redis_client=redis_client,
     )
 
     # ACT: Upload chunks 0-4 (first session, before interruption)
@@ -408,6 +412,7 @@ async def test_chunk_manifest_continuity_after_resume(
 
 @pytest.mark.asyncio
 async def test_no_chunk_reprocessing_on_resume(
+    redis_client,
     session_store: RedisSessionStore,
     sample_workspace_id: UUID,
     sample_session_id: UUID,
@@ -448,6 +453,7 @@ async def test_no_chunk_reprocessing_on_resume(
     use_case = ProcessChunkUseCase(
         session_store=session_store,
         chunk_verifier=ChunkVerifier(),
+        redis_client=redis_client,
     )
 
     request = ProcessChunkRequest(
@@ -488,6 +494,7 @@ async def test_no_chunk_reprocessing_on_resume(
 
 @pytest.mark.asyncio
 async def test_offset_mismatch_returns_409_conflict(
+    redis_client,
     session_store: RedisSessionStore,
     sample_workspace_id: UUID,
     sample_session_id: UUID,
@@ -521,6 +528,7 @@ async def test_offset_mismatch_returns_409_conflict(
     use_case = ProcessChunkUseCase(
         session_store=session_store,
         chunk_verifier=ChunkVerifier(),
+        redis_client=redis_client,
     )
 
     # TEST CASE 1: Client sends offset 0 (trying to restart upload)
@@ -604,6 +612,7 @@ async def test_resume_after_service_restart(
     use_case_1 = ProcessChunkUseCase(
         session_store=session_store_1,
         chunk_verifier=ChunkVerifier(),
+        redis_client=redis_client,
     )
 
     # Upload chunk 0
@@ -645,6 +654,7 @@ async def test_resume_after_service_restart(
     use_case_2 = ProcessChunkUseCase(
         session_store=session_store_2,
         chunk_verifier=ChunkVerifier(),
+        redis_client=redis_client,
     )
 
     chunk_2_data = generate_chunk_data(2)
@@ -735,6 +745,7 @@ async def test_resume_fails_after_24_hour_expiry(
     use_case = ProcessChunkUseCase(
         session_store=session_store,
         chunk_verifier=ChunkVerifier(),
+        redis_client=redis_client,
     )
 
     chunk_data = generate_chunk_data(0)
@@ -759,6 +770,7 @@ async def test_resume_fails_after_24_hour_expiry(
 
 @pytest.mark.asyncio
 async def test_resume_large_file_200_chunks(
+    redis_client,
     session_store: RedisSessionStore,
     sample_workspace_id: UUID,
     sample_session_id: UUID,
@@ -792,6 +804,7 @@ async def test_resume_large_file_200_chunks(
     use_case = ProcessChunkUseCase(
         session_store=session_store,
         chunk_verifier=ChunkVerifier(),
+        redis_client=redis_client,
     )
 
     # ACT: Upload chunks 0-149 (first 787 MB)
@@ -861,6 +874,7 @@ async def test_resume_large_file_200_chunks(
 
 @pytest.mark.asyncio
 async def test_chunk_overflow_beyond_file_size_rejected(
+    redis_client,
     session_store: RedisSessionStore,
     sample_workspace_id: UUID,
     sample_session_id: UUID,
@@ -882,6 +896,7 @@ async def test_chunk_overflow_beyond_file_size_rejected(
     use_case = ProcessChunkUseCase(
         session_store=session_store,
         chunk_verifier=ChunkVerifier(),
+        redis_client=redis_client,
     )
 
     # Upload chunk 0 and 1 successfully (10 MB total)
@@ -914,6 +929,7 @@ async def test_chunk_overflow_beyond_file_size_rejected(
 
 @pytest.mark.asyncio
 async def test_workspace_isolation_prevents_cross_workspace_access(
+    redis_client,
     session_store: RedisSessionStore,
 ):
     """Test workspace_id enforces isolation boundary.
@@ -936,6 +952,7 @@ async def test_workspace_isolation_prevents_cross_workspace_access(
     use_case = ProcessChunkUseCase(
         session_store=session_store,
         chunk_verifier=ChunkVerifier(),
+        redis_client=redis_client,
     )
     chunk_data = generate_chunk_data(0)
     request = ProcessChunkRequest(
@@ -971,6 +988,7 @@ async def test_workspace_isolation_prevents_cross_workspace_access(
 
 @pytest.mark.asyncio
 async def test_negative_and_invalid_offsets_rejected(
+    redis_client,
     session_store: RedisSessionStore,
     sample_workspace_id: UUID,
     sample_session_id: UUID,
@@ -989,6 +1007,7 @@ async def test_negative_and_invalid_offsets_rejected(
     use_case = ProcessChunkUseCase(
         session_store=session_store,
         chunk_verifier=ChunkVerifier(),
+        redis_client=redis_client,
     )
 
     # Test case 1: Negative offset raises ValueError at DTO validation
@@ -1019,6 +1038,7 @@ async def test_negative_and_invalid_offsets_rejected(
 
 @pytest.mark.asyncio
 async def test_partial_last_chunk_handling(
+    redis_client,
     session_store: RedisSessionStore,
     sample_workspace_id: UUID,
     sample_session_id: UUID,
@@ -1041,6 +1061,7 @@ async def test_partial_last_chunk_handling(
     use_case = ProcessChunkUseCase(
         session_store=session_store,
         chunk_verifier=ChunkVerifier(),
+        redis_client=redis_client,
     )
 
     # ACT: Upload 2 full chunks
@@ -1077,6 +1098,7 @@ async def test_partial_last_chunk_handling(
 
 @pytest.mark.asyncio
 async def test_offset_equals_size_before_completion(
+    redis_client,
     session_store: RedisSessionStore,
     sample_workspace_id: UUID,
     sample_session_id: UUID,
@@ -1097,6 +1119,7 @@ async def test_offset_equals_size_before_completion(
     use_case = ProcessChunkUseCase(
         session_store=session_store,
         chunk_verifier=ChunkVerifier(),
+        redis_client=redis_client,
     )
 
     # ACT: Upload all 3 chunks

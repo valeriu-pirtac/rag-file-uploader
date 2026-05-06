@@ -83,7 +83,7 @@ development_status:
   epic-4-retrospective: optional
 
   # Epic 5: File Assembly, Integrity & Pipeline Integration
-  epic-5: in-progress
+  epic-5: done
   5-1-implement-workspace-scoped-file-deduplication: done
   5-2-implement-minio-s3-file-assembly-with-storage-isolation: done
   5-3-integrate-clamav-virus-scanner: optional  # Deferred - not critical for current MVP stage; will revisit during later implementation phase
@@ -91,7 +91,7 @@ development_status:
   5-5-implement-nats-jetstream-publisher: done
   5-6-implement-event-retry-logic-with-dead-letter-queue: done
   5-7-implement-webhook-callback-alternative: done
-  5-8-orchestrate-complete-upload-use-case: backlog
+  5-8-orchestrate-complete-upload-use-case: done
   epic-5-retrospective: optional
 
   # Epic 6: Observability, Metrics & Operations
