@@ -3,7 +3,15 @@
 This module defines custom exceptions used across the domain layer.
 """
 
+from __future__ import annotations
+
+from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
+
+
+if TYPE_CHECKING:
+    from src.domain.value_objects import SHA256Hash
 
 
 class DomainException(Exception):
@@ -309,9 +317,106 @@ class RateLimitExceededError(DomainException):
 
 
 class DuplicateFileError(DomainException):
-    """Raised when a file with the same SHA-256 already exists in the workspace."""
+    """Raised when a file with the same SHA-256 already exists in the workspace.
 
-    pass
+    This exception indicates that deduplication detected a file with identical
+    SHA-256 checksum already exists in the workspace. This prevents redundant
+    storage and processing of duplicate files.
+
+    The error includes metadata about the existing file to help clients:
+    - Reference the existing file instead of uploading again
+    - Provide context for "file already exists" messages
+    - Support client-side caching strategies
+
+    Attributes:
+        sha256_checksum: SHA-256 hash of the duplicate file
+        existing_file_id: UUID of the existing file on S3
+        existing_s3_path: Full S3 path of existing file
+        uploaded_at: UTC timestamp when existing file was uploaded
+
+    HTTP Mapping:
+        Status: 409 Conflict
+        Error Code: DUPLICATE_FILE
+
+    Integration:
+        - Raised by: DeduplicationService.check_for_duplicate() (Story 5.1)
+        - Called from: CompleteUploadUseCase after file assembly (Story 5.8)
+        - Timing: After assembly, before virus scan
+
+    Examples:
+        >>> from uuid import uuid4
+        >>> from datetime import datetime, timezone
+        >>> from src.domain.value_objects import SHA256Hash
+        >>>
+        >>> error = DuplicateFileError(
+        ...     sha256_checksum=SHA256Hash("a" * 64),
+        ...     existing_file_id=uuid4(),
+        ...     existing_s3_path="workspace_123/abc-def.pdf",
+        ...     uploaded_at=datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+        ... )
+        >>> str(error)
+        'File with SHA-256 aaaa... already exists in workspace (file_id: ..., uploaded: 2026-05-01T12:00:00+00:00)'
+    """
+
+    def __init__(
+        self,
+        sha256_checksum: SHA256Hash,
+        existing_file_id: UUID,
+        existing_s3_path: str,
+        uploaded_at: datetime,
+    ) -> None:
+        """Initialize duplicate file error.
+
+        Args:
+            sha256_checksum: SHA-256 hash of the duplicate file
+            existing_file_id: UUID of the existing file on S3
+            existing_s3_path: Full S3 path of existing file (workspace_{id}/file_id.ext)
+            uploaded_at: UTC timestamp when existing file was uploaded
+
+        Raises:
+            ValueError: If any required parameter is None or empty
+
+        Example:
+            >>> from uuid import uuid4
+            >>> from datetime import datetime, timezone
+            >>> from src.domain.value_objects import SHA256Hash
+            >>>
+            >>> error = DuplicateFileError(
+            ...     sha256_checksum=SHA256Hash("b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"),
+            ...     existing_file_id=uuid4(),
+            ...     existing_s3_path="workspace_abc123/file-uuid.pdf",
+            ...     uploaded_at=datetime.now(timezone.utc)
+            ... )
+        """
+        # Validate inputs
+        if sha256_checksum is None:
+            raise ValueError("sha256_checksum cannot be None")
+        from src.domain.value_objects import SHA256Hash
+
+        if not isinstance(sha256_checksum, SHA256Hash):
+            raise TypeError(
+                f"sha256_checksum must be SHA256Hash, got {type(sha256_checksum).__name__}"
+            )
+        if existing_file_id is None:
+            raise ValueError("existing_file_id cannot be None")
+        if not existing_s3_path:
+            raise ValueError("existing_s3_path cannot be empty")
+        if uploaded_at is None:
+            raise ValueError("uploaded_at cannot be None")
+        if uploaded_at.tzinfo is None:
+            raise ValueError("uploaded_at must be timezone-aware")
+
+        self.sha256_checksum = sha256_checksum
+        self.existing_file_id = existing_file_id
+        self.existing_s3_path = existing_s3_path
+        self.uploaded_at = uploaded_at
+
+        message = (
+            f"File with SHA-256 {sha256_checksum} already exists in workspace "
+            f"(file_id: {existing_file_id}, uploaded: {uploaded_at.isoformat()})"
+        )
+
+        super().__init__(message)
 
 
 class FileSizeLimitExceededError(DomainException):
